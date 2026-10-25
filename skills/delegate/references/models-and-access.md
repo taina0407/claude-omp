@@ -4,17 +4,18 @@
 
 `--model` is passed straight to omp, so it accepts anything `omp --model` does:
 
-| Value | Meaning |
-|---|---|
+| Value                                                                      | Meaning                                                                                                                         |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | a role: `default`, `smol`, `slow`, `plan`, `task`, `designer`, `vision`, … | Whatever that role is bound to in the user's `~/.omp/agent/config.yml` (`modelRoles`). Portable across machines — prefer these. |
-| a fuzzy name: `opus`, `gpt-6-luna`, `deepseek` | First matching model omp knows about. |
-| an exact id: `openai/gpt-6-luna`, `opencode-go/deepseek-v4.1-flash:high` | That model; a `:level` suffix sets thinking. |
-| omitted | omp's `default` role. |
+| a fuzzy name: `opus`, `gpt-6-luna`, `deepseek`                             | First matching model omp knows about.                                                                                           |
+| an exact id: `openai/gpt-6-luna`, `opencode-go/deepseek-v4.1-flash:high`   | That model; a `:level` suffix sets thinking.                                                                                    |
+| omitted                                                                    | omp's `default` role.                                                                                                           |
 
 See what this machine has with `omp models` (providers and ids) and
 `omp config get modelRoles` (role bindings).
 
 Rough guide:
+
 - Mechanical edits, boilerplate, renames, test scaffolding → `smol` or `task`.
 - Normal feature work with clear spec → `default`.
 - Hard debugging, design trade-offs, review → `slow` or `plan`, usually with `--access read`.
@@ -26,11 +27,13 @@ Users can also define named presets (model + thinking + access + timeout) in
 
 ## Access levels
 
-| `--access` | omp flags | Use for |
-|---|---|---|
-| `read` | only read/search tools | research, review, planning, second opinions |
-| `edit` (default) | `--approval-mode write`: file edits allowed; `bash` and `eval` denied | code changes where you will run the tests yourself |
-| `full` | `--approval-mode yolo`: everything incl. shell | tasks that must run tests/builds themselves; use in a git worktree or a tree you can reset |
+| `--access`       | omp flags                                                                                                 | Use for                                                                                |
+| ---------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `read`           | only read/search tools                                                                                    | research, review, planning, second opinions                                            |
+| `edit` (default) | `--approval-mode write`: file edits run freely; each `bash`/`eval` call waits for your `omp-task approve` | code changes; approve the test command, deny anything else                             |
+| `full`           | `--approval-mode yolo`: everything incl. shell, no approvals                                              | tasks that run many commands themselves; use in a git worktree or a tree you can reset |
 
-Headless omp cannot answer approval prompts: anything outside the level is simply denied and the
-worker reports it under "Open issues".
+omp runs in RPC mode under a supervisor. In `edit` mode an approval request pauses the worker,
+and `omp-task wait` returns with exit 4 so you can decide. Approvals left unanswered are denied
+after `--approval-timeout` (default 20m). `ask_orchestrator` and `notify_orchestrator` are
+available at every level.
