@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "omp-delegate",
+  "version": "0.1.0",
+  "description": "Let Claude orchestrate the omp (oh-my-pi) coding agent: delegate scoped tasks to any model omp supports, review the result, and iterate in the same omp session.",
+  "author": {
+    "name": "Tai NA",
+    "url": "https://github.com/taina0407"
+  },
+  "homepage": "https://github.com/taina0407/claude-omp",
+  "repository": "https://github.com/taina0407/claude-omp",
+  "license": "MIT",
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "delegation",
+    "orchestration",
+    "multi-model",
+    "subagent"
+  ]
+}

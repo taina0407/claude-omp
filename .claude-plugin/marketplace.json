@@ -1,0 +1,15 @@
+{
+  "name": "omp-tools",
+  "description": "Claude Code plugins for working with the omp (oh-my-pi) coding agent.",
+  "owner": {
+    "name": "Tai NA",
+    "url": "https://github.com/taina0407"
+  },
+  "plugins": [
+    {
+      "name": "omp-delegate",
+      "source": ".",
+      "description": "Delegate scoped tasks from Claude to the omp agent on any model, then review and iterate."
+    }
+  ]
+}

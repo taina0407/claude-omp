@@ -1,0 +1,28 @@
+{
+  "defaults": {
+    "access": "edit",
+    "timeout": "30m"
+  },
+  "presets": {
+    "cheap": {
+      "model": "smol",
+      "access": "edit",
+      "timeout": "20m"
+    },
+    "builder": {
+      "model": "default",
+      "access": "full",
+      "timeout": "45m"
+    },
+    "reviewer": {
+      "model": "slow",
+      "access": "read",
+      "thinking": "high",
+      "timeout": "20m"
+    },
+    "designer": {
+      "model": "designer",
+      "access": "edit"
+    }
+  }
+}
