@@ -30,7 +30,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PREAMBLE_FILE = SCRIPT_DIR.parent / "prompts" / "worker-preamble.md"
@@ -729,8 +729,9 @@ class Supervisor:
             if f.get("isTerminal") is False:
                 return
             stop = None
+            # omp may elide long histories, leaving a string marker in the list.
             for msg in reversed(f.get("messages") or []):
-                if msg.get("role") == "assistant":
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
                     stop = msg.get("stopReason")
                     break
             if self.abort_reason:

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-10-27
+
+- Fix: long jobs were reported as FAILED ("supervisor exited without recording a result")
+  because the supervisor crashed on the string marker omp inserts when it elides
+  `agent_end` history.
+
 ## 0.2.0 — 2026-10-25
 
 - Jobs now run under a detached supervisor that drives `omp --mode rpc` instead of `omp -p`.

@@ -188,7 +188,8 @@ def run_prompt(prompt):
         "usage": {"totalTokens": 100, "cost": {"total": 0.001}},
     }
     emit({"type": "message_end", "message": msg})
-    emit({"type": "agent_end", "messages": [msg]})
+    # Real omp elides long histories with a string marker inside the list.
+    emit({"type": "agent_end", "messages": [msg, "…[3 items elided for RPC frame]"]})
 
 
 threading.Thread(target=reader, daemon=True).start()
