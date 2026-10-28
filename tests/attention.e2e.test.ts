@@ -69,10 +69,11 @@ describe("quiet by default", () => {
 });
 
 describe("checkpoints", () => {
-	test("a checkpoint wakes wait once, with the note", async () => {
+	test("a checkpoint wakes wait once, with the whole note", async () => {
 		const job = await sb.start(["CHECKPOINT SLEEP"]);
 		const first = await sb.cli(["wait", job], [0]);
 		expect(first.stdout).toContain("CHECKPOINT: design done");
+		expect(first.stdout).toContain("x END\n");
 		expect(first.stdout).toContain(`WAKE: ${job} checkpoint`);
 		// Delivered once: the next wait keeps waiting.
 		await sb.cli(["wait", job, "--max-wait", "1"], [3]);
@@ -152,7 +153,14 @@ describe("approval rules", () => {
 		expect(out.denied_tools).toEqual(["bash"]);
 	});
 
-	test("an allow rule never approves a chained command", async () => {
+	test("a chain is approved only when every command matches a rule", async () => {
+		const out = await sb.runJson(["--allow", "make *", "--allow", "rm -rf build", "BASHCHAIN"]);
+		expect(out.result).toContain("approval=Approve");
+		const feed = (await sb.cli(["watch", out.id, "--from-start", "--verbose"])).stdout;
+		expect(feed).toContain("AUTO-APPROVE: bash: Command: make test && rm -rf build");
+	});
+
+	test("an allow rule never approves a chain with an unmatched command", async () => {
 		const r = await sb.cli(["run", "--allow", "make *", "BASHCHAIN"], [0]);
 		expect(r.stdout).toContain("APPROVAL needed");
 		expect(r.stdout).toContain("make test && rm -rf build");

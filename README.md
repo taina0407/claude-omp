@@ -101,7 +101,7 @@ Do not change files.
 ```text
 Claude: I'll start a scoped read-only job and wait in the background.
         [The job finishes and the background wait returns.]
-Claude: Deny rules win. Command-pattern allows reject chaining and redirects;
+Claude: Deny rules win. Command-pattern allows reject pipes and redirects;
         tool-wide allows bypass that check. No files changed.
         The report includes the resolved model, recorded cost, and my checks.
 ```
@@ -290,10 +290,14 @@ without applying them; neither is an undo command for changes already applied.
 ### Approval rules
 
 Repeatable `--allow GLOB` and `--deny GLOB` match the whole approval subject: `*` matches any
-text and `?` one character. Deny wins. Command-pattern allows such as `--allow 'bun test*'`
-reject chaining, pipes, redirects, command substitutions, backticks, and newlines.
+text and `?` one character. Deny wins. A command list joined with `&&`, `||` or `;` is split
+into its commands (separators inside quotes do not count): a command-pattern allow such as
+`--allow 'bun test*'` approves it only when every command matches an allow rule, and a deny rule
+that matches any one of them denies it. Command-pattern allows never approve pipes, background
+`&`, redirects, command substitutions, backticks, or newlines. The bash no-ops `true` and `:`
+are approved without a rule.
 
-**Whole-tool allows such as `--allow 'tool:bash'` bypass that chaining filter.** Use narrow
+**Whole-tool allows such as `--allow 'tool:bash'` bypass that filter.** Use narrow
 command patterns unless you intend to grant the entire tool. Rules do not inspect what a
 permitted script does internally.
 

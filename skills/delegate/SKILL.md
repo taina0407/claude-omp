@@ -65,7 +65,9 @@ when it needs this conversation's nuance, touches files you are editing, or is a
      asks); `--deny` for anything destructive, out of scope or touching network/global state.
      Without `--ref`, `reply`/`approve` act on the oldest open item of that kind; to pick another,
      pass `--ref <ref>` from its `PENDING:` line;
-   - checkpoint → look at what it reports; `omp-task steer <id> "..."` only if it drifts;
+   - checkpoint → look at what it reports; `omp-task steer <id> "..."` only if it drifts. A
+     checkpoint counts as seen only when a `wait` reports it: one you already read in `watch`
+     still wakes the next `wait` once;
    - stalled → `omp-task watch <id> --verbose --last 40` (the latest events, then it exits; a
      plain `watch` follows a running job until it ends), then steer or `omp-task cancel <id>`;
    - interrupted (the daemon restarted) → `omp-task resume <id> --detach` (without `--detach`

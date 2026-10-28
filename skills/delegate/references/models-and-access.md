@@ -46,10 +46,13 @@ does not restrict it.
 `--allow GLOB` approves and `--deny GLOB` denies matching requests without waking you
 (repeatable; also `allow`/`deny` in config defaults and presets, which add up). A rule matches
 the command text (`bun test*`, `git diff*`), or a whole tool when written `tool:<name>`. Deny
-wins. A command-pattern allow rule never matches a command that chains, pipes or redirects
-(`;`, `&&`, `|`, `>`, `$(`), so `bun test*` cannot approve `bun test; rm -rf ~`. A `tool:<name>`
-allow skips that check and approves every call of the tool, chained or not: treat it as a grant
-of the whole tool.
+wins. A command list joined with `&&`, `||` or `;` is approved only when every command in it
+matches an allow rule (`mkdir -p src/x && cp a src/x/` with rules for both), so `bun test*`
+cannot approve `bun test; rm -rf ~`; a deny rule matching any command denies the list. A
+command-pattern rule never approves pipes, `&`, redirects or substitutions (`|`, `>`, `$(`).
+The bash no-ops `true` and `:` are approved without a rule. A `tool:<name>` allow skips these
+checks and approves every call of the tool, chained or not: treat it as a grant of the whole
+tool.
 
 `omp-task approve <id> --session` picks omp's "allow for this session" answer, which covers
 **that tool** (e.g. every later `eval`) for the rest of the job, not every tool. A later request

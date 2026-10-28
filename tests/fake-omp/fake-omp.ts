@@ -10,7 +10,7 @@
  *   BASH          request approval for `make test`; the decision goes in the text
  *   BASHCHAIN     the same for `make test && rm -rf build`
  *   NOTIFY        notify_orchestrator
- *   CHECKPOINT    notify_orchestrator with checkpoint: true
+ *   CHECKPOINT    notify_orchestrator with checkpoint: true (a 600-character note ending in END)
  *   TOOLS <n>     n quick read tool calls
  *   FLAKY         run `bun test` three times, failing each time
  *   SUBAGENT      report one subagent that costs $0.002
@@ -188,7 +188,9 @@ async function runPrompt(prompt: Frame): Promise<void> {
 				id: "n1",
 				toolCallId: "n",
 				toolName: "notify_orchestrator",
-				arguments: checkpoint ? { message: "design done", checkpoint } : { message: "halfway" },
+				arguments: checkpoint
+					? { message: `design done: ${"x".repeat(580)} END`, checkpoint }
+					: { message: "halfway" },
 			});
 			await waitFor((f) => f.type === "host_tool_result" && f.id === "n1");
 		} else if (word === "TOOLS") {

@@ -50,6 +50,8 @@ const STALL_ERROR_STREAK = 5;
 const STALL_SAME_FAILURES = 3;
 /** Longest dependency result pasted into a prompt by `{{result:<job>}}`. */
 const RESULT_INJECT_CHARS = 12_000;
+/** A checkpoint is the worker's summary for the orchestrator: keep all of a normal one. */
+const CHECKPOINT_CHARS = 4_000;
 const QUESTION_EXPIRED_ANSWER =
 	"No answer from the orchestrator in time. Make the most reasonable assumption, continue, " +
 	"and list the assumption under Open issues.";
@@ -328,7 +330,7 @@ export class JobRunner {
 				});
 				break;
 			case "progress":
-				if (e.checkpoint) this.#notice("checkpoint", e.text.slice(0, 300));
+				if (e.checkpoint) this.#notice("checkpoint", e.text.slice(0, CHECKPOINT_CHARS));
 				else this.#feed("progress", e.text.slice(0, 300));
 				break;
 			case "tool_start":

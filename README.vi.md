@@ -107,7 +107,7 @@ Do not change files.
 Claude: Tôi sẽ khởi chạy một job chỉ đọc với phạm vi giới hạn và chờ ở chế độ nền.
         [Job hoàn tất và lệnh chờ chạy nền trả về.]
 Claude: Quy tắc từ chối được ưu tiên. Quy tắc cho phép theo mẫu lệnh từ chối
-        nối lệnh và chuyển hướng; quy tắc cho phép toàn bộ công cụ bỏ qua bước
+        pipe và chuyển hướng; quy tắc cho phép toàn bộ công cụ bỏ qua bước
         kiểm tra đó. Không có tệp nào thay đổi.
         Báo cáo gồm mô hình thực tế được chọn, chi phí đã ghi nhận và các bước tôi đã kiểm tra.
 ```
@@ -309,10 +309,14 @@ hoàn tác các thay đổi đã áp dụng.
 
 Có thể lặp lại `--allow GLOB` và `--deny GLOB`; chúng khớp với toàn bộ nội dung yêu cầu phê
 duyệt: `*` khớp mọi chuỗi và `?` khớp một ký tự. Quy tắc từ chối được ưu tiên. Quy tắc cho
-phép theo mẫu lệnh như `--allow 'bun test*'` từ chối nối lệnh, pipe, chuyển hướng, thay thế
-lệnh, dấu backtick và ký tự xuống dòng.
+Chuỗi lệnh nối bằng `&&`, `||` hoặc `;` được tách thành từng lệnh (dấu phân cách nằm trong
+dấu nháy không tính): quy tắc cho phép theo mẫu lệnh như `--allow 'bun test*'` chỉ duyệt khi
+mọi lệnh đều khớp một quy tắc cho phép, và quy tắc từ chối khớp bất kỳ lệnh nào sẽ từ chối cả
+chuỗi. Quy tắc theo mẫu lệnh không bao giờ duyệt pipe, `&` chạy nền, chuyển hướng, thay thế
+lệnh, dấu backtick và ký tự xuống dòng. Các lệnh bash no-op `true` và `:` được duyệt mà không
+cần quy tắc.
 
-**Quy tắc cho phép toàn bộ công cụ như `--allow 'tool:bash'` bỏ qua bộ lọc nối lệnh đó.**
+**Quy tắc cho phép toàn bộ công cụ như `--allow 'tool:bash'` bỏ qua bộ lọc đó.**
 Dùng mẫu lệnh có phạm vi hẹp, trừ khi chủ ý cấp quyền cho toàn bộ công cụ. Các quy tắc không
 kiểm tra hoạt động bên trong tập lệnh được cho phép.
 

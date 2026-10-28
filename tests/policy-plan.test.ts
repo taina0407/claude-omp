@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { orderPlan } from "../src/core/plan";
-import { approvalSubject, decideApproval } from "../src/core/policy";
+import { approvalSubject, decideApproval, NO_OP_RULE, splitCommands } from "../src/core/policy";
 import { UsageError } from "../src/core/util";
 
 describe("approval rules", () => {
@@ -32,17 +32,67 @@ describe("approval rules", () => {
 		);
 	});
 
-	test("allow never matches chaining, pipes, redirects or substitutions", () => {
+	test("allow never matches pipes, redirects, substitutions or an unmatched chained command", () => {
 		for (const cmd of [
 			"bun test; rm x",
 			"bun test && x",
+			"bun test || x",
 			"bun test | sh",
+			"bun test & x",
 			"bun test > f",
 			"bun test $(x)",
 			"bun test `x`",
+			"bun test\nrm x",
+			"bun test 'a; rm x",
+			"bun test &&",
 		]) {
 			expect(decideApproval("bash", `Command: ${cmd}`, rules(["bun test*"]))).toBeNull();
 		}
+	});
+
+	test("a chain is approved when every command matches an allow rule", () => {
+		const r = rules(["mkdir -p src/*", "cp /tmp/fixtures/*"]);
+		const d = decideApproval("bash", "Command: mkdir -p src/x && cp /tmp/fixtures/a.xml src/x/", r);
+		expect(d).toEqual({ decision: "approve", rule: "mkdir -p src/*, cp /tmp/fixtures/*" });
+		expect(
+			decideApproval("bash", "Command: mkdir -p src/x; cp /tmp/fixtures/a src/", r),
+		).not.toBeNull();
+		expect(decideApproval("bash", "Command: mkdir -p src/x && cp ~/.ssh/id src/", r)).toBeNull();
+	});
+
+	test("separators inside quotes do not split a command", () => {
+		expect(splitCommands(`git log --format="%h; %s" && echo 'a && b'`)).toEqual([
+			`git log --format="%h; %s"`,
+			"echo 'a && b'",
+		]);
+		expect(splitCommands("echo a\\;b")).toEqual(["echo a\\;b"]);
+		expect(splitCommands("echo a\\\\;b")).toEqual(["echo a\\\\", "b"]);
+		// A quoted separator stays inside the command, so `bun test*` covers it.
+		expect(
+			decideApproval("bash", `Command: bun test -t "a; b"`, rules(["bun test*"])),
+		).not.toBeNull();
+	});
+
+	test("deny matches each command of a chain", () => {
+		expect(
+			decideApproval("bash", "Command: bun test && rm -rf x", rules(["*"], ["rm -rf *"]))?.decision,
+		).toBe("deny");
+	});
+
+	test("bash no-ops need no rule", () => {
+		expect(decideApproval("bash", "Command: true", rules([]))).toEqual({
+			decision: "approve",
+			rule: NO_OP_RULE,
+		});
+		expect(decideApproval("bash", "Command: :", rules([]))?.decision).toBe("approve");
+		expect(
+			decideApproval("bash", "Command: true && bun test", rules(["bun test*"])),
+		).not.toBeNull();
+		expect(decideApproval("bash", "Command: true && rm x", rules([]))).toBeNull();
+		expect(decideApproval("bash", "Command: true", rules([], ["tool:bash"]))?.decision).toBe(
+			"deny",
+		);
+		expect(decideApproval("edit", "Path: true", rules([]))).toBeNull();
 	});
 
 	test("tool:<name> matches a whole tool", () => {

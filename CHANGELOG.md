@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.1 (2026-10-29)
+
+- Approval rules split a command list joined with `&&`, `||` or `;` (outside quotes) and
+  approve it when every command matches an allow rule, so `mkdir -p x && cp a x/` with a rule
+  for each no longer wakes you; a deny rule matching any command denies the list. Pipes, `&`,
+  redirects and substitutions still always ask.
+- The bash no-ops `true` and `:` are approved without a rule, and the worker preamble tells the
+  worker not to run placeholder commands or chain with pipes and redirects.
+- A checkpoint keeps up to 4000 characters (was 300), so `wait` prints the worker's whole
+  summary instead of cutting it mid-word.
+
 ## 1.1.0 (2026-10-29)
 
 Drops compatibility with omp-task 0.2 and with earlier builds, and changes some CLI behaviour

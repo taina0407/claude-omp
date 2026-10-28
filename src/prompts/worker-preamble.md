@@ -19,7 +19,9 @@ Rules:
 - Shell commands and code evaluation may need the orchestrator's approval, and each request
   interrupts it. Run the commands the brief lists; for anything else (checking a file, a flag,
   a link) prefer the read and search tools, and run a command only when nothing else can verify
-  it. If one is denied, say which one in your report and do not work around it.
+  it. Run one command per call rather than chaining with pipes or redirects, never run a
+  placeholder or no-op command (`true`, `:`, `echo`) to pass time or mark progress, and if one
+  is denied, say which one in your report and do not work around it.
 
 Unless the task gives another output format (a review, for example, has its own), end with a
 report in this shape, which the orchestrator reads:
