@@ -14,16 +14,21 @@ import {
 	createJobBody,
 	type DiffResponse,
 	type FeedEvent,
+	type GroupSummary,
 	type Health,
 	type JobView,
+	type PlanResponse,
 	type PruneResponse,
+	planBody,
 	pruneBody,
 	shutdownBody,
 	type WaitResponse,
+	type WaitView,
 } from "../api/schema";
-import { loadConfig } from "../core/config";
+import { type Config, loadConfig } from "../core/config";
 import { createJob, NotFoundError, resolveJob } from "../core/jobs";
 import { socketPath } from "../core/paths";
+import { orderPlan } from "../core/plan";
 import { JobRunner } from "../core/runner";
 import { Store } from "../core/store";
 import { isActive, isTerminal, type Job } from "../core/types";
@@ -32,12 +37,24 @@ import { applyWorktree, removeWorktree, worktreePatch } from "../isolation/workt
 import { VERSION } from "../version";
 import { acquireLock, releaseLock } from "./lock";
 import { log } from "./log";
+import { budgetBlock, groupLimits, schedule } from "./scheduler";
 
 const DEFAULT_IDLE_S = 15 * 60;
 const IDLE_CHECK_MS = 1_000;
 /** Longest a single `wait` request is held open; the CLI simply asks again. */
 const MAX_LONG_POLL_S = 60;
 const SSE_HEARTBEAT_MS = 15_000;
+/** Notices `wait` returns for; `--no-checkpoint` leaves checkpoints in the feed only. */
+const NOTICE_KINDS = ["checkpoint", "stalled"] as const;
+
+/** The config, or an empty one when it is broken (the CLI reports that on its own commands). */
+function safeConfig(): Config {
+	try {
+		return loadConfig();
+	} catch {
+		return {};
+	}
+}
 
 class HttpError extends Error {
 	constructor(
@@ -138,19 +155,11 @@ export class Daemon {
 
 	/** Jobs this daemon's predecessor was running when it died are interrupted, not lost. */
 	#recover(): void {
-		const autoResume = (() => {
-			try {
-				return loadConfig().auto_resume === true;
-			} catch {
-				return false;
-			}
-		})();
+		const autoResume = safeConfig().auto_resume === true;
 		const stale = this.store.listJobs({ limit: 10_000 }).filter((j) => isActive(j.status));
 		for (const job of stale) {
-			if (job.status === "queued") {
-				this.#start(job, false);
-				continue;
-			}
+			if (job.status === "queued" || job.status === "blocked") continue; // the scheduler's
+
 			// omp does not exit when its stdin closes mid-turn; stop it before anyone resumes the session.
 			if (stopOrphanWorker(job.ompPid)) {
 				log("warn", "stopped an orphaned omp worker", { job: job.id, pid: job.ompPid });
@@ -161,10 +170,52 @@ export class Daemon {
 			log("warn", "job interrupted by a daemon restart", { job: job.id });
 			if (autoResume) this.#resume(job);
 		}
+		this.#schedule();
+	}
+
+	/** Releases, skips and starts waiting jobs as the scheduler decides. */
+	#schedule(): void {
+		if (this.#stopping) return;
+		const config = safeConfig();
+		const running = [...this.#runners.keys()]
+			.map((id) => this.store.getJob(id))
+			.filter((j): j is Job => j !== null);
+		for (const d of schedule(this.store, config, running)) {
+			const id = d.job.id;
+			if (d.action === "release") {
+				this.store.transition(id, ["blocked"], "queued");
+				this.store.appendFeed(id, "info", "dependencies done; queued");
+			} else if (d.action === "start") {
+				this.#start(this.store.getJob(id) as Job, false);
+			} else {
+				this.#endUnstarted(
+					this.store.getJob(id) as Job,
+					d.action === "skip" ? "skipped" : "over_budget",
+					d.reason,
+				);
+			}
+		}
+	}
+
+	/** Ends a job that never ran (skipped, over budget, cancelled while waiting). */
+	#endUnstarted(job: Job, status: "skipped" | "over_budget" | "cancelled", reason: string): void {
+		this.store.updateJob(job.id, {
+			status,
+			finishedAt: nowIso(),
+			errors: reason ? [...job.errors, reason] : job.errors,
+		});
+		this.store.appendFeed(job.id, "done", status, {
+			changed_files: job.changedFiles,
+			cost_usd: job.costUsd,
+			reason,
+		});
+		log("info", "job ended without running", { job: job.id, status, reason });
 	}
 
 	#start(job: Job, resume: boolean): void {
-		const runner = new JobRunner(this.store, job.id);
+		const runner = new JobRunner(this.store, job.id, {
+			overLimit: (j) => budgetBlock(this.store, safeConfig(), j, false),
+		});
 		this.#runners.set(job.id, runner);
 		log("info", resume ? "resuming job" : "starting job", { job: job.id });
 		runner
@@ -174,6 +225,7 @@ export class Daemon {
 				this.#runners.delete(job.id);
 				this.#lastActivity = performance.now();
 				log("info", "job ended", { job: job.id, status: this.store.getJob(job.id)?.status });
+				this.#schedule();
 			});
 	}
 
@@ -250,17 +302,21 @@ export class Daemon {
 		if (resource === "wait" && method === "GET") return this.#wait(url);
 		if (resource === "feed" && method === "GET") return this.#feed(url);
 		if (resource === "prune" && method === "POST") return this.#prune(await body(req, pruneBody));
+		if (resource === "plans" && method === "POST") return this.#plan(await body(req, planBody));
+		if (resource === "groups" && ref && method === "GET") return this.#group(ref);
 
 		if (resource === "jobs") {
 			if (!ref) {
 				if (method === "GET") {
 					const status = url.searchParams.get("status");
 					const cwd = url.searchParams.get("cwd");
-					const opts: { limit: number; cwd?: string; status?: string } = {
+					const group = url.searchParams.get("group");
+					const opts: { limit: number; cwd?: string; status?: string; group?: string } = {
 						limit: Number(url.searchParams.get("limit") ?? 20),
 					};
 					if (cwd) opts.cwd = cwd;
 					if (status) opts.status = status;
+					if (group) opts.group = group;
 					return json({ jobs: this.store.listJobs(opts) });
 				}
 				if (method === "POST") return this.#create(await body(req, createJobBody));
@@ -300,19 +356,68 @@ export class Daemon {
 			}
 		}
 		const job = createJob(this.store, b.options, parent);
-		this.#start(job, false);
+		this.#schedule();
 		return json(this.#view(this.store.getJob(job.id) as Job), 201);
+	}
+
+	/** Creates a plan's jobs in dependency order; on any error none of them stays queued. */
+	#plan(b: z.infer<typeof planBody>): Response {
+		const isJob = (ref: string) => this.store.findJobIds(ref).length === 1;
+		const ordered = orderPlan(b.tasks, isJob);
+		this.store.setGroup(b.group, {
+			maxConcurrent: b.maxConcurrent ?? null,
+			budgetUsd: b.budgetUsd ?? null,
+		});
+		const ids = new Map<string, string>();
+		const created: Job[] = [];
+		const byName = (text: string) =>
+			text.replace(/\{\{result:([\w.-]+)\}\}/g, (whole, name: string) => {
+				const id = ids.get(name);
+				return id ? `{{result:${id}}}` : whole;
+			});
+		try {
+			for (const t of ordered) {
+				const after = t.after.map((dep) => ids.get(dep) ?? dep);
+				const options = { ...t.options, prompt: byName(t.options.prompt), after, group: b.group };
+				const job = createJob(this.store, options);
+				ids.set(t.name, job.id);
+				created.push(job);
+			}
+		} catch (e) {
+			for (const job of created) this.#endUnstarted(job, "cancelled", "plan apply failed");
+			throw e;
+		}
+		this.#schedule();
+		const res: PlanResponse = {
+			group: b.group,
+			jobs: b.tasks.map((t) => {
+				const id = ids.get(t.name) as string;
+				return { name: t.name, id, status: (this.store.getJob(id) as Job).status };
+			}),
+		};
+		return json(res, 201);
+	}
+
+	#group(name: string): Response {
+		const jobs = this.store.listJobs({ limit: 10_000, group: name }).reverse();
+		if (!jobs.length) throw new NotFoundError(`no jobs in group '${name}'`);
+		const limits = groupLimits(this.store, safeConfig(), name);
+		const res: GroupSummary = {
+			group: name,
+			...limits,
+			spentUsd: this.store.spentUsd({ group: name }),
+			jobs,
+		};
+		return json(res);
 	}
 
 	#control(job: Job, b: z.infer<typeof controlBody>): Response {
 		const runner = this.#runners.get(job.id);
 		if (!runner) {
-			if (job.status === "interrupted" && b.kind === "abort") {
-				this.store.updateJob(job.id, { status: "cancelled", finishedAt: nowIso() });
-				this.store.appendFeed(job.id, "done", "cancelled", {
-					changed_files: job.changedFiles,
-					cost_usd: job.costUsd,
-				});
+			const idle = ["interrupted", "queued", "blocked"].includes(job.status);
+			if (idle && b.kind === "abort") {
+				this.#endUnstarted(job, "cancelled", "");
+				this.#schedule();
 				const res: ControlResponse = { ok: true };
 				return json(res);
 			}
@@ -378,24 +483,46 @@ export class Daemon {
 		return json(res);
 	}
 
+	/**
+	 * Returns when every job has ended, or (with attention) as soon as one needs the orchestrator:
+	 * a question, an approval, an interruption, or a notice (checkpoint, stalled). Notices are
+	 * delivered once: the answer that reports them removes them.
+	 */
 	async #wait(url: URL): Promise<Response> {
 		const ids = (url.searchParams.get("ids") ?? "").split(",").filter(Boolean);
-		if (!ids.length) throw new HttpError(400, "ids is required");
+		const group = url.searchParams.get("group");
+		if (!ids.length && !group) throw new HttpError(400, "ids or group is required");
 		const attention = url.searchParams.get("attention") !== "0";
+		const kinds: readonly string[] =
+			url.searchParams.get("checkpoint") === "0" ? ["stalled"] : NOTICE_KINDS;
 		const timeoutS = Math.min(Number(url.searchParams.get("timeout") ?? 25), MAX_LONG_POLL_S);
 		const deadline = performance.now() + timeoutS * 1000;
 		const jobIds = ids.map((r) => resolveJob(this.store, r).id);
+		if (group) {
+			const members = this.store.listJobs({ limit: 10_000, group }).map((j) => j.id);
+			if (!members.length) throw new NotFoundError(`no jobs in group '${group}'`);
+			jobIds.push(...members.filter((id) => !jobIds.includes(id)).reverse());
+		}
 		this.#clients++;
 		try {
 			while (true) {
 				const views = jobIds.map((id) => this.#view(this.store.getJob(id) as Job));
-				const needs = views.some((v) => v.pending.length > 0 || v.job.status === "interrupted");
+				const noticed = (v: JobView) =>
+					!isTerminal(v.job.status) && v.job.notices.some((n) => kinds.includes(n.kind));
+				const needs = views.some(
+					(v) => v.pending.length > 0 || v.job.status === "interrupted" || noticed(v),
+				);
 				let reason: WaitResponse["reason"] | null = null;
 				if (attention && needs) reason = "attention";
 				else if (views.every((v) => isTerminal(v.job.status))) reason = "done";
 				else if (performance.now() >= deadline) reason = "timeout";
 				if (reason) {
-					const res: WaitResponse = { reason, jobs: views };
+					const jobs: WaitView[] = views.map((v) => ({
+						...v,
+						delivered:
+							reason === "attention" && noticed(v) ? this.store.takeNotices(v.job.id, kinds) : [],
+					}));
+					const res: WaitResponse = { reason, jobs };
 					return json(res);
 				}
 				await this.#nextChange(deadline - performance.now());

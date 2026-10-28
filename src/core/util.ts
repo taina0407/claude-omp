@@ -21,7 +21,12 @@ export function parseDuration(value: string | number | null | undefined): number
 }
 
 export function nowIso(): string {
-	return new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00");
+	return isoAt(new Date());
+}
+
+/** The store's timestamp format (UTC, seconds, "+00:00"). */
+export function isoAt(date: Date): string {
+	return date.toISOString().replace(/\.\d{3}Z$/, "+00:00");
 }
 
 /** Job ids sort by creation time: YYYYMMDD-HHMMSS-xxxx (local time), like v0.2. */

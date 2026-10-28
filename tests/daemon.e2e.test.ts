@@ -115,7 +115,7 @@ describe("crash recovery", () => {
 		expect(argAfter(argvs.at(-2) as string[], "--resume")).toBeTruthy(); // tried to resume
 		expect(argvs.at(-1)).not.toContain("--resume"); // then started over
 		expect(argvs.at(-1)).toContain("--append-system-prompt");
-		const feed = (await sb.cli(["watch", job, "--from-start"])).stdout;
+		const feed = (await sb.cli(["watch", job, "--from-start", "--verbose"])).stdout;
 		expect(feed).toContain("starting over");
 	});
 

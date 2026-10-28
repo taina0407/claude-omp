@@ -1,7 +1,16 @@
 /** Job model shared by the store, the runner and the CLI. */
 
-export const ACTIVE_STATUSES = ["queued", "starting", "running", "waiting"] as const;
-export const TERMINAL_STATUSES = ["completed", "failed", "cancelled", "timeout"] as const;
+/** `blocked`: waiting for the jobs in `after` · `queued`: waiting for a free slot. */
+export const ACTIVE_STATUSES = ["blocked", "queued", "starting", "running", "waiting"] as const;
+/** `skipped`: a dependency did not complete · `over_budget`: a spending limit was reached. */
+export const TERMINAL_STATUSES = [
+	"completed",
+	"failed",
+	"cancelled",
+	"timeout",
+	"skipped",
+	"over_budget",
+] as const;
 
 /** The daemon stopped while the job ran; `omp-task resume` continues its omp session. */
 export const INTERRUPTED = "interrupted" as const;
@@ -52,6 +61,17 @@ export interface JobSpec {
 	/** Omitted means `none`; the store fills the column in. */
 	isolate?: Isolation;
 	carryDirty?: boolean;
+	/** Jobs that must end first; omitted means none. */
+	after?: string[];
+	/** Start after the dependencies end whatever their outcome (default: only if all completed). */
+	afterAny?: boolean;
+	groupName?: string | null;
+	budgetUsd?: number | null;
+	/** Approval globs the daemon decides by itself (see core/policy.ts). */
+	allow?: string[];
+	deny?: string[];
+	/** No worker activity for this long raises a `stalled` notice; null disables it. */
+	stallTimeoutS?: number | null;
 }
 
 export interface Job extends JobSpec {
@@ -84,6 +104,23 @@ export interface Job extends JobSpec {
 	baseRef: string | null;
 	branch: string | null;
 	repoRoot: string | null;
+	after: string[];
+	afterAny: boolean;
+	groupName: string | null;
+	budgetUsd: number | null;
+	allow: string[];
+	deny: string[];
+	stallTimeoutS: number | null;
+	/** Things the orchestrator should see that are not questions or approvals; `wait` consumes them. */
+	notices: Notice[];
+}
+
+export type NoticeKind = "checkpoint" | "stalled";
+
+export interface Notice {
+	kind: NoticeKind;
+	text: string;
+	at: string;
 }
 
 export type PendingKind = "question" | "approval";

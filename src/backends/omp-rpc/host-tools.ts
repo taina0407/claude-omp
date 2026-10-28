@@ -34,10 +34,18 @@ export const HOST_TOOLS = [
 		label: "Notify orchestrator",
 		description:
 			"Send a one-line progress note to the orchestrating agent without waiting for a reply. " +
-			"Use it only at meaningful milestones (plan made, main change done, tests running).",
+			"Notes are logged; the orchestrator is not interrupted for them. Set checkpoint to true " +
+			"only when the task asks you to report a checkpoint, or when the orchestrator should " +
+			"look now (for example the plan changed in a way the brief did not foresee).",
 		parameters: {
 			type: "object",
-			properties: { message: { type: "string" } },
+			properties: {
+				message: { type: "string" },
+				checkpoint: {
+					type: "boolean",
+					description: "Wake the orchestrator for this note (default false).",
+				},
+			},
 			required: ["message"],
 		},
 		loadMode: "essential",

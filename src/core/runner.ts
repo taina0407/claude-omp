@@ -12,6 +12,7 @@ import type { Backend, BackendEvent, BackendSession } from "../backends/types";
 import { createWorktree, worktreeCwd } from "../isolation/worktree";
 import { changedFiles, type Snapshot, snapshot, withoutDir } from "./git";
 import { jobDir, PREAMBLE_FILE, stateDir } from "./paths";
+import { decideApproval } from "./policy";
 import type { Store } from "./store";
 import type {
 	ApprovalDecision,
@@ -19,6 +20,7 @@ import type {
 	ControlRequest,
 	Job,
 	JobStatus,
+	NoticeKind,
 	PendingKind,
 	TerminalStatus,
 } from "./types";
@@ -34,6 +36,11 @@ export const RESUME_PROMPT =
 	"Your previous turn was interrupted before it finished (the supervising process restarted). " +
 	"Check what you already did, then continue the task from where you stopped and end with the " +
 	"report the task asks for.";
+/** A streak of failing tool calls this long, or one call failing this often, is "stalled". */
+const STALL_ERROR_STREAK = 5;
+const STALL_SAME_FAILURES = 3;
+/** Longest dependency result pasted into a prompt by `{{result:<job>}}`. */
+const RESULT_INJECT_CHARS = 12_000;
 const QUESTION_EXPIRED_ANSWER =
 	"No answer from the orchestrator in time. Make the most reasonable assumption, continue, " +
 	"and list the assumption under Open issues.";
@@ -45,8 +52,23 @@ interface LivePending {
 	since: number;
 }
 
-export function promptText(job: Job): string {
-	let text = readFileSync(join(jobDir(job.id), "prompt.md"), "utf8");
+/** Replaces `{{result:<job>}}` with that job's final report (for jobs run `--after` it). */
+export function expandResults(text: string, store: Store): string {
+	return text.replace(/\{\{result:([\w.-]+)\}\}/g, (whole, ref: string) => {
+		const ids = store.findJobIds(ref);
+		const file = ids.length === 1 ? join(jobDir(ids[0] as string), "result.md") : null;
+		if (!file || !existsSync(file)) return whole;
+		const result = readFileSync(file, "utf8");
+		return result.length > RESULT_INJECT_CHARS
+			? `${result.slice(0, RESULT_INJECT_CHARS)}\n[truncated; full report: ${file}]`
+			: result;
+	});
+}
+
+export function promptText(job: Job, store?: Store): string {
+	const raw = readFileSync(join(jobDir(job.id), "prompt.md"), "utf8");
+	let text = store ? expandResults(raw, store) : raw;
+	if (text !== raw) writeFileSync(join(jobDir(job.id), "prompt-sent.md"), text);
 	if (job.files.length) {
 		text += `\n\nAttached files (read them first):\n${job.files.map((f) => `- ${f}`).join("\n")}`;
 	}
@@ -66,7 +88,7 @@ export class JobRunner {
 	#job: Job;
 	#session: BackendSession | null = null;
 	#pending = new Map<string, LivePending>();
-	#abortReason: "cancelled" | "timeout" | null = null;
+	#abortReason: "cancelled" | "timeout" | "over_budget" | null = null;
 	#abortDeadline: number | null = null;
 	#finished = false;
 	#started = performance.now();
@@ -80,6 +102,13 @@ export class JobRunner {
 	/** Whether omp got as far as reporting its session (it never does when --resume fails). */
 	#sawStart = false;
 	#tick: ReturnType<typeof setInterval> | null = null;
+	/** Group and daily limits, checked by the daemon; returns why the job must stop, or null. */
+	readonly #overLimit: (job: Job) => string | null;
+	#lastActivity = performance.now();
+	#idleNoticed = false;
+	#errorStreak = 0;
+	#failures = new Map<string, number>();
+	#toolDetail = new Map<string, string>();
 	#done: Promise<Job>;
 	#resolveDone!: (job: Job) => void;
 
@@ -98,9 +127,14 @@ export class JobRunner {
 	#stopReason: string | null = null;
 	#finalText = "";
 
-	constructor(store: Store, jobId: string, backend: Backend = ompRpcBackend) {
+	constructor(
+		store: Store,
+		jobId: string,
+		opts: { backend?: Backend; overLimit?: (job: Job) => string | null } = {},
+	) {
 		this.#store = store;
-		this.#backend = backend;
+		this.#backend = opts.backend ?? ompRpcBackend;
+		this.#overLimit = opts.overLimit ?? (() => null);
 		this.#jobId = jobId;
 		const job = store.getJob(jobId);
 		if (!job) throw new Error(`no job ${jobId}`);
@@ -153,7 +187,7 @@ export class JobRunner {
 			this.#resumedSession = job.sessionId;
 			this.#startSession(job.sessionId, RESUME_PROMPT);
 		} else {
-			this.#startSession(job.resumeSession, promptText(job));
+			this.#startSession(job.resumeSession, promptText(job, this.#store));
 		}
 		this.#tick = setInterval(() => this.#onTick(), TICK_MS);
 		return this.#done;
@@ -252,8 +286,16 @@ export class JobRunner {
 
 	// ---------------------------------------------------------------- backend → job
 
+	/** Records something the orchestrator should look at; `wait` returns for it. */
+	#notice(kind: NoticeKind, text: string): void {
+		this.#feed(kind, text);
+		this.#store.addNotice(this.#jobId, { kind, text, at: nowIso() });
+	}
+
 	#onEvent(e: BackendEvent): void {
 		if (this.#finished) return;
+		this.#lastActivity = performance.now();
+		this.#idleNoticed = false;
 		switch (e.kind) {
 			case "spawned":
 				this.#store.updateJob(this.#jobId, { ompPid: e.pid });
@@ -268,20 +310,29 @@ export class JobRunner {
 				});
 				break;
 			case "progress":
-				this.#feed("progress", e.text.slice(0, 300));
+				if (e.checkpoint) this.#notice("checkpoint", e.text.slice(0, 300));
+				else this.#feed("progress", e.text.slice(0, 300));
 				break;
 			case "tool_start":
+				this.#toolDetail.set(e.id, `${e.name}: ${e.detail.slice(0, 160)}`);
 				this.#tools[e.name] = (this.#tools[e.name] ?? 0) + 1;
 				this.#store.updateJob(this.#jobId, { tools: this.#tools }); // for `status` while running
 				if (FEED_TOOLS.has(e.name)) this.#feed("tool", `${e.name}: ${e.detail.slice(0, 160)}`);
 				break;
-			case "tool_end":
-				if (e.isError) {
-					if (/requires approval|denied/i.test(e.text)) this.#denied.add(e.name);
+			case "tool_end": {
+				const call = this.#toolDetail.get(e.id) ?? e.name;
+				this.#toolDetail.delete(e.id);
+				if (!e.isError) {
+					this.#errorStreak = 0;
+				} else if (/requires approval|denied/i.test(e.text)) {
+					this.#denied.add(e.name);
+				} else {
 					// Usually a non-zero exit, e.g. a failing test run: normal work, not a job error.
-					else this.#toolErrors[e.name] = (this.#toolErrors[e.name] ?? 0) + 1;
+					this.#toolErrors[e.name] = (this.#toolErrors[e.name] ?? 0) + 1;
+					this.#onToolFailure(call);
 				}
 				break;
+			}
 			case "assistant":
 				this.#costUsd += e.costUsd;
 				this.#tokens += e.tokens;
@@ -293,11 +344,13 @@ export class JobRunner {
 					this.#feed("error", e.error.slice(0, 300));
 				}
 				this.#store.updateJob(this.#jobId, this.#progress());
+				this.#checkBudget();
 				break;
 			case "subagent": {
 				if (e.costUsd !== null && e.costUsd !== this.#subagentCost.get(e.id)) {
 					this.#subagentCost.set(e.id, e.costUsd);
 					this.#store.updateJob(this.#jobId, this.#progress());
+					this.#checkBudget();
 				}
 				const before = this.#subagentStatus.get(e.id);
 				if (e.status && e.status !== before) {
@@ -317,13 +370,23 @@ export class JobRunner {
 					this.#syncWaiting();
 				}
 				break;
-			case "approval":
+			case "approval": {
+				const rule = decideApproval(e.tool, e.detail, this.#job);
+				if (rule) {
+					if (rule.decision === "deny") this.#denied.add(e.tool);
+					this.#session?.decide(e.ref, rule.decision);
+					this.#feed(`auto-${rule.decision}`, `${e.tool}: ${e.detail}`.slice(0, 200), {
+						rule: rule.rule,
+					});
+					break;
+				}
 				this.#addPending(e.ref, "approval", e.detail, e.tool, e.options, null);
 				this.#feed("approval", `${e.tool}: ${e.detail}`.slice(0, 300), {
 					ref: e.ref,
 					tool: e.tool,
 				});
 				break;
+			}
 			case "warning":
 				this.#feed("info", e.text.slice(0, 300));
 				break;
@@ -331,6 +394,31 @@ export class JobRunner {
 				void this.#finishFromEnd(e);
 				break;
 		}
+	}
+
+	/** A run of failures, or the same call failing again and again, means the worker is stuck. */
+	#onToolFailure(call: string): void {
+		this.#errorStreak++;
+		const times = (this.#failures.get(call) ?? 0) + 1;
+		this.#failures.set(call, times);
+		if (this.#errorStreak === STALL_ERROR_STREAK) {
+			this.#notice("stalled", `${STALL_ERROR_STREAK} tool calls in a row failed (last: ${call})`);
+		} else if (times === STALL_SAME_FAILURES) {
+			this.#notice("stalled", `the same call failed ${times} times: ${call}`);
+		}
+	}
+
+	#checkBudget(): void {
+		if (this.#abortReason || this.#finished) return;
+		const job = this.#store.getJob(this.#jobId) as Job;
+		const reason =
+			job.budgetUsd !== null && job.costUsd > job.budgetUsd
+				? `spent $${job.costUsd.toFixed(4)} of its $${job.budgetUsd} budget`
+				: this.#overLimit(job);
+		if (!reason) return;
+		this.#errors.push(`over budget: ${reason}`);
+		this.#feed("over_budget", reason);
+		this.#abort("over_budget");
 	}
 
 	#addPending(
@@ -366,7 +454,7 @@ export class JobRunner {
 			// Interrupted before omp saved anything: there is no session to go back to.
 			this.#resumedSession = null;
 			this.#feed("info", "omp had not saved the session before the interruption; starting over");
-			this.#startSession(this.#job.resumeSession, promptText(this.#job));
+			this.#startSession(this.#job.resumeSession, promptText(this.#job, this.#store));
 			return Promise.resolve();
 		}
 		if (this.#abortReason) return this.#finish(this.#abortReason, [], e.exitCode);
@@ -387,6 +475,17 @@ export class JobRunner {
 			this.#feed("timeout", `hit --timeout ${timeout}s; aborting`);
 			this.#abort("timeout");
 		}
+		const stallS = this.#job.stallTimeoutS;
+		if (
+			stallS &&
+			!this.#abortReason &&
+			!this.#idleNoticed &&
+			this.#pending.size === 0 &&
+			now - this.#lastActivity > stallS * 1000
+		) {
+			this.#idleNoticed = true;
+			this.#notice("stalled", `no worker activity for ${Math.round(stallS)}s`);
+		}
 		if (this.#abortDeadline && now > this.#abortDeadline) {
 			void this.#finish(this.#abortReason ?? "cancelled", [], null);
 			return;
@@ -399,6 +498,8 @@ export class JobRunner {
 		if (this.#finished) return { ok: false, error: "job already ended" };
 		const session = this.#session;
 		if (!session) return { ok: false, error: "job has not started" };
+		this.#lastActivity = performance.now();
+		this.#idleNoticed = false;
 		switch (cmd.kind) {
 			case "steer": {
 				const message = cmd.message ?? "";
@@ -467,7 +568,7 @@ export class JobRunner {
 		}
 	}
 
-	#abort(reason: "cancelled" | "timeout"): void {
+	#abort(reason: "cancelled" | "timeout" | "over_budget"): void {
 		this.#abortReason = reason;
 		this.#abortDeadline = performance.now() + ABORT_GRACE_MS;
 		this.#session?.abort();
@@ -493,6 +594,7 @@ export class JobRunner {
 		this.#store.clearPending(job.id);
 		this.#store.updateJob(job.id, {
 			...progress,
+			notices: [],
 			status,
 			finishedAt: nowIso(),
 			stopReason: this.#stopReason,

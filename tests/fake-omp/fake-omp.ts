@@ -8,7 +8,11 @@
  *   WRITE <name>  create <name> in the cwd (write tool)
  *   ASK           ask_orchestrator (after omp's own approval prompt for it); answer goes in the text
  *   BASH          request approval for `make test`; the decision goes in the text
+ *   BASHCHAIN     the same for `make test && rm -rf build`
  *   NOTIFY        notify_orchestrator
+ *   CHECKPOINT    notify_orchestrator with checkpoint: true
+ *   TOOLS <n>     n quick read tool calls
+ *   FLAKY         run `bun test` three times, failing each time
  *   SUBAGENT      report one subagent that costs $0.002
  *   SLEEP         idle up to 30s; `steer` ends it early, `abort` ends the run as aborted
  *   SLOWSTART     take 3s to accept the prompt (the session is not saved until then)
@@ -128,15 +132,33 @@ async function runPrompt(prompt: Frame): Promise<void> {
 				isError: false,
 				result: {},
 			});
-		} else if (word === "NOTIFY") {
+		} else if (word === "NOTIFY" || word === "CHECKPOINT") {
+			const checkpoint = word === "CHECKPOINT";
 			emit({
 				type: "host_tool_call",
 				id: "n1",
 				toolCallId: "n",
 				toolName: "notify_orchestrator",
-				arguments: { message: "halfway" },
+				arguments: checkpoint ? { message: "design done", checkpoint } : { message: "halfway" },
 			});
 			await waitFor((f) => f.type === "host_tool_result" && f.id === "n1");
+		} else if (word === "TOOLS") {
+			for (let n = 0; n < Number(next); n++) {
+				const call = { toolName: "read", toolCallId: `r${n}` };
+				emit({ type: "tool_execution_start", ...call, args: { path: `f${n}.ts` } });
+				emit({ type: "tool_execution_end", ...call, isError: false, result: {} });
+			}
+		} else if (word === "FLAKY") {
+			for (let n = 0; n < 3; n++) {
+				const call = { toolName: "bash", toolCallId: `t${n}` };
+				emit({ type: "tool_execution_start", ...call, args: { command: "bun test" } });
+				emit({
+					type: "tool_execution_end",
+					...call,
+					isError: true,
+					result: { content: [{ type: "text", text: "1 fail" }] },
+				});
+			}
 		} else if (word === "ASK") {
 			emit({
 				type: "extension_ui_request",
@@ -156,18 +178,19 @@ async function runPrompt(prompt: Frame): Promise<void> {
 			const res = await waitFor((f) => f.type === "host_tool_result" && f.id === "q1", 60_000);
 			const content = (res?.result as { content?: { text?: string }[] } | undefined)?.content;
 			notes.push(`answer=${content?.[0]?.text ?? "<none>"}`);
-		} else if (word === "BASH") {
+		} else if (word === "BASH" || word === "BASHCHAIN") {
+			const command = word === "BASH" ? "make test" : "make test && rm -rf build";
 			emit({
 				type: "tool_execution_start",
 				toolName: "bash",
 				toolCallId: "b",
-				args: { command: "make test" },
+				args: { command },
 			});
 			emit({
 				type: "extension_ui_request",
 				id: "ap-bash",
 				method: "select",
-				title: "Allow tool: bash\nCommand: make test",
+				title: `Allow tool: bash\nCommand: ${command}`,
 				options: ["Approve", "Approve bash for this session", "Deny"],
 			});
 			const res = await waitFor(

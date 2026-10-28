@@ -4,7 +4,7 @@
  */
 import { Database } from "bun:sqlite";
 import { dbFile } from "./paths";
-import type { FeedEntry, Job, JobSpec, JobStatus, Pending } from "./types";
+import type { FeedEntry, Job, JobSpec, JobStatus, Notice, Pending } from "./types";
 import { nowIso } from "./util";
 
 const MIGRATIONS: string[] = [
@@ -84,9 +84,31 @@ const MIGRATIONS: string[] = [
 	ALTER TABLE jobs ADD COLUMN base_ref TEXT;
 	ALTER TABLE jobs ADD COLUMN branch TEXT;
 	ALTER TABLE jobs ADD COLUMN repo_root TEXT;`,
+	// v1 M4: dependencies, groups, budgets, approval rules and notices.
+	`ALTER TABLE jobs ADD COLUMN after TEXT NOT NULL DEFAULT '[]';
+	ALTER TABLE jobs ADD COLUMN after_any INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE jobs ADD COLUMN group_name TEXT;
+	ALTER TABLE jobs ADD COLUMN budget_usd REAL;
+	ALTER TABLE jobs ADD COLUMN allow TEXT NOT NULL DEFAULT '[]';
+	ALTER TABLE jobs ADD COLUMN deny TEXT NOT NULL DEFAULT '[]';
+	ALTER TABLE jobs ADD COLUMN stall_timeout_s REAL;
+	ALTER TABLE jobs ADD COLUMN notices TEXT NOT NULL DEFAULT '[]';
+	CREATE INDEX jobs_group ON jobs(group_name);
+	CREATE TABLE groups (
+		name TEXT PRIMARY KEY,
+		max_concurrent INTEGER,
+		budget_usd REAL
+	);`,
 ];
 
 type Row = Record<string, unknown>;
+
+/** Limits stored for a group (by `plan apply`); the config's `groups` block gives defaults. */
+export interface GroupSettings {
+	name: string;
+	maxConcurrent: number | null;
+	budgetUsd: number | null;
+}
 
 const JSON_COLUMNS = new Set([
 	"add_dirs",
@@ -101,6 +123,10 @@ const JSON_COLUMNS = new Set([
 	"payload",
 	"result",
 	"data",
+	"after",
+	"allow",
+	"deny",
+	"notices",
 ]);
 
 function camel(key: string): string {
@@ -118,6 +144,7 @@ function fromRow<T>(row: Row): T {
 	}
 	if ("noPreamble" in out) out.noPreamble = Boolean(out.noPreamble);
 	if ("carryDirty" in out) out.carryDirty = Boolean(out.carryDirty);
+	if ("afterAny" in out) out.afterAny = Boolean(out.afterAny);
 	return out as T;
 }
 
@@ -170,10 +197,12 @@ export class Store {
 			.query(
 				`INSERT INTO jobs (id, parent_id, title, status, cwd, access, model, thinking, timeout_s,
 				answer_timeout_s, approval_timeout_s, add_dirs, files, extra_args, no_preamble,
-				resume_session, created_at, isolate, carry_dirty)
-			VALUES ($id, $parentId, $title, 'queued', $cwd, $access, $model, $thinking, $timeoutS,
+				resume_session, created_at, isolate, carry_dirty, after, after_any, group_name,
+				budget_usd, allow, deny, stall_timeout_s)
+			VALUES ($id, $parentId, $title, $status, $cwd, $access, $model, $thinking, $timeoutS,
 				$answerTimeoutS, $approvalTimeoutS, $addDirs, $files, $extraArgs, $noPreamble,
-				$resumeSession, $createdAt, $isolate, $carryDirty)`,
+				$resumeSession, $createdAt, $isolate, $carryDirty, $after, $afterAny, $groupName,
+				$budgetUsd, $allow, $deny, $stallTimeoutS)`,
 			)
 			.run({
 				id,
@@ -194,6 +223,14 @@ export class Store {
 				createdAt: nowIso(),
 				isolate: spec.isolate ?? "none",
 				carryDirty: spec.carryDirty ? 1 : 0,
+				status: spec.after?.length ? "blocked" : "queued",
+				after: JSON.stringify(spec.after ?? []),
+				afterAny: spec.afterAny ? 1 : 0,
+				groupName: spec.groupName ?? null,
+				budgetUsd: spec.budgetUsd ?? null,
+				allow: JSON.stringify(spec.allow ?? []),
+				deny: JSON.stringify(spec.deny ?? []),
+				stallTimeoutS: spec.stallTimeoutS ?? null,
 			});
 		return this.getJob(id) as Job;
 	}
@@ -213,9 +250,13 @@ export class Store {
 		return rows.map((r) => String(r.id));
 	}
 
-	listJobs(opts: { limit: number; cwd?: string; status?: string }): Job[] {
+	listJobs(opts: { limit: number; cwd?: string; status?: string; group?: string }): Job[] {
 		const where: string[] = [];
 		const params: (string | number)[] = [];
+		if (opts.group) {
+			where.push("group_name = ?");
+			params.push(opts.group);
+		}
 		if (opts.cwd) {
 			where.push("cwd = ?");
 			params.push(opts.cwd);
@@ -245,6 +286,68 @@ export class Store {
 			.run(to, id, ...from);
 		if (res.changes > 0) this.onChange(id);
 		return res.changes > 0;
+	}
+
+	/** Jobs that are not finished yet, oldest first (the scheduler's view). */
+	unfinishedJobs(): Job[] {
+		const rows = this.db
+			.query("SELECT * FROM jobs WHERE status IN ('blocked', 'queued') ORDER BY id")
+			.all() as Row[];
+		return rows.map((r) => fromRow<Job>(r));
+	}
+
+	/** Total cost of a group's jobs, or of every job created since `sinceIso`. */
+	spentUsd(filter: { group: string } | { sinceIso: string }): number {
+		const row = (
+			"group" in filter
+				? this.db
+						.query("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM jobs WHERE group_name = ?")
+						.get(filter.group)
+				: this.db
+						.query("SELECT COALESCE(SUM(cost_usd), 0) AS s FROM jobs WHERE created_at >= ?")
+						.get(filter.sinceIso)
+		) as { s: number };
+		return row.s;
+	}
+
+	// ---------------------------------------------------------------- notices
+
+	addNotice(jobId: string, notice: Notice): void {
+		const job = this.getJob(jobId);
+		if (job) this.updateJob(jobId, { notices: [...job.notices, notice] });
+	}
+
+	/** Removes and returns a job's notices of the given kinds (what `wait` delivered). */
+	takeNotices(jobId: string, kinds: readonly string[]): Notice[] {
+		const job = this.getJob(jobId);
+		if (!job) return [];
+		const taken = job.notices.filter((n) => kinds.includes(n.kind));
+		if (taken.length) {
+			this.updateJob(jobId, { notices: job.notices.filter((n) => !kinds.includes(n.kind)) });
+		}
+		return taken;
+	}
+
+	// ---------------------------------------------------------------- groups
+
+	getGroup(name: string): GroupSettings | null {
+		const row = this.db.query("SELECT * FROM groups WHERE name = ?").get(name) as Row | null;
+		return row ? fromRow<GroupSettings>(row) : null;
+	}
+
+	/** Creates or updates a group's limits; null leaves a limit as it was. */
+	setGroup(
+		name: string,
+		limits: { maxConcurrent?: number | null; budgetUsd?: number | null },
+	): void {
+		this.db
+			.query(
+				`INSERT INTO groups (name, max_concurrent, budget_usd) VALUES (?, ?, ?)
+				ON CONFLICT(name) DO UPDATE SET
+					max_concurrent = COALESCE(excluded.max_concurrent, max_concurrent),
+					budget_usd = COALESCE(excluded.budget_usd, budget_usd)`,
+			)
+			.run(name, limits.maxConcurrent ?? null, limits.budgetUsd ?? null);
 	}
 
 	// ---------------------------------------------------------------- pending questions/approvals

@@ -38,6 +38,16 @@ export interface JobOptions {
 	/** auto (default) | worktree | none; `continue` inherits the parent's instead. */
 	isolate?: string | undefined;
 	carryDirty?: boolean | undefined;
+	/** Jobs (ids or unique parts of ids) that must end before this one starts. */
+	after?: string[] | undefined;
+	/** Start once the dependencies end, even if one did not complete. */
+	afterAny?: boolean | undefined;
+	group?: string | undefined;
+	/** USD; the job is stopped as `over_budget` when it spends more. */
+	budget?: string | number | undefined;
+	allow?: string[] | undefined;
+	deny?: string[] | undefined;
+	stallTimeout?: string | undefined;
 }
 
 function settingsOf(job: Job): Settings {
@@ -47,6 +57,8 @@ function settingsOf(job: Job): Settings {
 	if (job.timeoutS) s.timeout = job.timeoutS;
 	if (job.answerTimeoutS) s.answer_timeout = job.answerTimeoutS;
 	if (job.approvalTimeoutS) s.approval_timeout = job.approvalTimeoutS;
+	if (job.stallTimeoutS) s.stall_timeout = job.stallTimeoutS;
+	if (job.budgetUsd) s.budget = job.budgetUsd;
 	return s;
 }
 
@@ -96,7 +108,28 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 		resumeSession: parent?.sessionId ?? null,
 		isolate,
 		carryDirty: Boolean(opts.carryDirty),
+		after: [...new Set((opts.after ?? []).map((ref) => resolveJob(store, ref).id))],
+		afterAny: Boolean(opts.afterAny),
+		groupName: opts.group ?? parent?.groupName ?? null,
+		budgetUsd: parseBudget(pick("budget", undefined) ?? null, opts.budget),
+		// Rules add up: config defaults, the preset, the parent job's rules, then the flags.
+		allow: unique([
+			...(config.defaults?.allow ?? []),
+			...(preset.allow ?? []),
+			...(parent?.allow ?? []),
+			...(opts.allow ?? []),
+		]),
+		deny: unique([
+			...(config.defaults?.deny ?? []),
+			...(preset.deny ?? []),
+			...(parent?.deny ?? []),
+			...(opts.deny ?? []),
+		]),
+		stallTimeoutS: parseDuration(pick("stall_timeout", opts.stallTimeout, "10m")),
 	};
+	if (spec.groupName && !/^[\w.-]{1,64}$/.test(spec.groupName)) {
+		throw new UsageError("group names use letters, digits, '.', '-' and '_' (at most 64)");
+	}
 	const id = newJobId();
 	mkdirSync(jobDir(id), { recursive: true });
 	writeFileSync(join(jobDir(id), "prompt.md"), opts.prompt);
@@ -110,6 +143,16 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 		repoRoot: parent.repoRoot,
 	});
 	return store.getJob(id) as Job;
+}
+
+const unique = (xs: string[]) => [...new Set(xs.map((x) => x.trim()).filter(Boolean))];
+
+/** `--budget` wins over the preset/default `budget`; both are USD amounts. */
+function parseBudget(fallback: number | null, flag: string | number | undefined): number | null {
+	if (flag === undefined || flag === "") return fallback;
+	const n = Number(String(flag).replace(/^\$/, ""));
+	if (!Number.isFinite(n) || n <= 0) throw new UsageError("--budget must be a positive USD amount");
+	return n;
 }
 
 function resolveIsolation(

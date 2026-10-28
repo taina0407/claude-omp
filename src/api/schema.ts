@@ -1,32 +1,71 @@
 /** Request bodies of the daemon's HTTP API (validated) and the shapes it returns. */
 import { z } from "zod";
-import type { CommandResult, FeedEntry, Job, Pending } from "../core/types";
+import type { CommandResult, FeedEntry, Job, Notice, Pending } from "../core/types";
 
 const optionalString = z.string().optional();
 
+export const jobOptions = z.object({
+	prompt: z.string().min(1),
+	clientCwd: z.string().startsWith("/"),
+	model: optionalString,
+	preset: optionalString,
+	access: optionalString,
+	thinking: optionalString,
+	timeout: optionalString,
+	answerTimeout: optionalString,
+	approvalTimeout: optionalString,
+	cwd: optionalString,
+	addDirs: z.array(z.string()).optional(),
+	files: z.array(z.string()).optional(),
+	title: optionalString,
+	ompArgs: optionalString,
+	noPreamble: z.boolean().optional(),
+	isolate: optionalString,
+	carryDirty: z.boolean().optional(),
+	after: z.array(z.string()).optional(),
+	afterAny: z.boolean().optional(),
+	group: optionalString,
+	budget: z.union([z.string(), z.number()]).optional(),
+	allow: z.array(z.string()).optional(),
+	deny: z.array(z.string()).optional(),
+	stallTimeout: optionalString,
+});
+
 export const createJobBody = z.object({
 	parent: z.string().nullable().optional(),
-	options: z.object({
-		prompt: z.string().min(1),
-		clientCwd: z.string().startsWith("/"),
-		model: optionalString,
-		preset: optionalString,
-		access: optionalString,
-		thinking: optionalString,
-		timeout: optionalString,
-		answerTimeout: optionalString,
-		approvalTimeout: optionalString,
-		cwd: optionalString,
-		addDirs: z.array(z.string()).optional(),
-		files: z.array(z.string()).optional(),
-		title: optionalString,
-		ompArgs: optionalString,
-		noPreamble: z.boolean().optional(),
-		isolate: optionalString,
-		carryDirty: z.boolean().optional(),
-	}),
+	options: jobOptions,
 });
 export type CreateJobBody = z.infer<typeof createJobBody>;
+
+/** A whole DAG at once (`omp-task plan apply`); `after` names other tasks or existing jobs. */
+export const planBody = z.object({
+	group: z.string().min(1),
+	maxConcurrent: z.number().int().positive().optional(),
+	budgetUsd: z.number().positive().optional(),
+	tasks: z
+		.array(
+			z.object({
+				name: z.string().regex(/^[\w.-]+$/, "task names use letters, digits, '.', '-', '_'"),
+				after: z.array(z.string()).default([]),
+				options: jobOptions,
+			}),
+		)
+		.min(1),
+});
+export type PlanBody = z.infer<typeof planBody>;
+
+export interface PlanResponse {
+	group: string;
+	jobs: { name: string; id: string; status: string }[];
+}
+
+export interface GroupSummary {
+	group: string;
+	maxConcurrent: number | null;
+	budgetUsd: number | null;
+	spentUsd: number;
+	jobs: Job[];
+}
 
 export const applyBody = z.object({
 	threeWay: z.boolean().optional(),
@@ -66,7 +105,12 @@ export interface JobView {
 export interface WaitResponse {
 	/** done: every job ended · attention: one needs the orchestrator · timeout: neither yet. */
 	reason: "done" | "attention" | "timeout";
-	jobs: JobView[];
+	jobs: WaitView[];
+}
+
+/** A job in a `wait` answer, with the notices this answer delivered (they are not sent again). */
+export interface WaitView extends JobView {
+	delivered: Notice[];
 }
 
 export type ControlResponse = CommandResult;

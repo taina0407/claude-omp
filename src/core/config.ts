@@ -19,9 +19,21 @@ const settings = z.looseObject({
 	omp_args: z.string().optional(),
 	/** auto (default) | worktree | none; see `omp-task run --isolate`. */
 	isolate: z.enum(["auto", "worktree", "none"]).optional(),
+	/** Approval globs decided without asking (see core/policy.ts); merged with --allow/--deny. */
+	allow: z.array(z.string()).optional(),
+	deny: z.array(z.string()).optional(),
+	/** No worker activity for this long wakes the orchestrator (default 10m; 0 disables). */
+	stall_timeout: duration.optional(),
+	/** Per-job spending limit in USD. */
+	budget: z.number().positive().optional(),
 });
 
 export type Settings = z.infer<typeof settings>;
+
+const groupLimits = z.looseObject({
+	max_concurrent: z.number().int().positive().optional(),
+	budget_usd: z.number().positive().optional(),
+});
 
 const configSchema = z.looseObject({
 	defaults: settings.optional(),
@@ -30,6 +42,14 @@ const configSchema = z.looseObject({
 	auto_resume: z.boolean().optional(),
 	/** Stop the daemon after this long with no jobs and no clients (default 15m). */
 	daemon_idle_timeout: duration.optional(),
+	/** Jobs running at once across everything (default 4). */
+	max_concurrent: z.number().int().positive().optional(),
+	/** Jobs that may edit one checkout at once when they are not isolated (default 1). */
+	max_writers_per_repo: z.number().int().positive().optional(),
+	/** Spending limit for all jobs created on one (local) day. */
+	daily_budget_usd: z.number().positive().optional(),
+	/** Default limits per group name; `plan apply` can set them too. */
+	groups: z.record(z.string(), groupLimits).optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

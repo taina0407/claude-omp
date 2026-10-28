@@ -2,9 +2,23 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { jobDir } from "../core/paths";
-import type { FeedEntry, Job, Pending } from "../core/types";
+import type { FeedEntry, Job, Notice, Pending } from "../core/types";
+import { isTerminal } from "../core/types";
 
 export const RESULT_CHAR_LIMIT = 12_000;
+
+/** Feed lines worth waking the orchestrator for; a piped `watch` shows only these. */
+export const ATTENTION_FEED_KINDS: ReadonlySet<string> = new Set([
+	"question",
+	"approval",
+	"checkpoint",
+	"stalled",
+	"error",
+	"timeout",
+	"over_budget",
+	"interrupted",
+	"done",
+]);
 
 export function out(line = ""): void {
 	process.stdout.write(`${line}\n`);
@@ -52,6 +66,11 @@ export function jobJson(job: Job, pending: Pending[], full = false) {
 		worktree: job.worktreePath,
 		branch: job.branch,
 		base_ref: job.baseRef,
+		group: job.groupName,
+		after: job.after,
+		after_any_outcome: job.afterAny,
+		budget_usd: job.budgetUsd,
+		notices: job.notices,
 		created_at: job.createdAt,
 		finished_at: job.finishedAt,
 		pending: pending.map(pendingJson),
@@ -81,8 +100,24 @@ const counts = (m: Record<string, number>) =>
 		.map(([k, v]) => `${k}×${v}`)
 		.join(", ");
 
-export function emitJob(job: Job, pending: Pending[], asJson: boolean, full = false): void {
-	const data = jobJson(job, pending, full);
+function printNotices(jobId: string, notices: Notice[]): void {
+	for (const n of notices) out(`${n.kind.toUpperCase()}: ${n.text}`);
+	if (notices.some((n) => n.kind === "stalled")) {
+		out(`  look:   omp-task watch ${jobId} --from-start --verbose | tail -40`);
+		out(`  act:    omp-task steer ${jobId} "<new direction>"   or   omp-task cancel ${jobId}`);
+	} else {
+		out(`  look:   omp-task status ${jobId}   redirect: omp-task steer ${jobId} "..."`);
+	}
+	out(`  then:   omp-task wait ${jobId}   (in the background)`);
+}
+
+export function emitJob(
+	job: Job,
+	pending: Pending[],
+	asJson: boolean,
+	opts: { full?: boolean; notices?: Notice[]; maxResultLines?: number } = {},
+): void {
+	const data = jobJson(job, pending, opts.full);
 	if (asJson) {
 		out(JSON.stringify(data, null, 2));
 		return;
@@ -93,6 +128,13 @@ export function emitJob(job: Job, pending: Pending[], asJson: boolean, full = fa
 	if (job.worktreePath) {
 		out(`- worktree: ${job.worktreePath} (branch ${job.branch ?? "-"})`);
 	}
+	if (job.groupName || job.after.length) {
+		const after = job.after.length
+			? `after: ${job.after.join(", ")}${job.afterAny ? " (any outcome)" : ""}`
+			: "";
+		out(`- ${[job.groupName ? `group: ${job.groupName}` : "", after].filter(Boolean).join("  ")}`);
+	}
+	if (job.budgetUsd !== null) out(`- budget: $${job.budgetUsd}`);
 	const model = job.modelUsed ?? job.modelResolved ?? job.model ?? "(omp default)";
 	out(`- model: ${model}  session: ${job.sessionId ?? "-"}`);
 	if (job.durationS !== null) {
@@ -113,14 +155,23 @@ export function emitJob(job: Job, pending: Pending[], asJson: boolean, full = fa
 		out(`  continue it: omp-task resume ${job.id}    or give up: omp-task cancel ${job.id}`);
 		return;
 	}
-	if (pending.length) {
+	if (pending.length || opts.notices?.length) {
 		out();
 		printPending(job.id, pending);
+		if (opts.notices?.length) printNotices(job.id, opts.notices);
 		return;
 	}
+	if (!isTerminal(job.status)) return; // blocked, queued or running: no report yet
 	out();
-	out(data.result || "(no final message)");
-	if (data.result_truncated) out(`\n[truncated — full text: omp-task result ${job.id} --full]`);
+	let result = data.result || "(no final message)";
+	let truncated = data.result_truncated;
+	const lines = result.split("\n");
+	if (opts.maxResultLines && lines.length > opts.maxResultLines) {
+		result = lines.slice(0, opts.maxResultLines).join("\n");
+		truncated = true;
+	}
+	out(result);
+	if (truncated) out(`\n[truncated — full text: omp-task result ${job.id} --full]`);
 }
 
 export function formatFeed(e: Pick<FeedEntry, "jobId" | "ts" | "kind" | "text" | "data">): string {

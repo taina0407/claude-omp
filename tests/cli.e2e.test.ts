@@ -185,7 +185,7 @@ describe("live supervision", () => {
 describe("feed", () => {
 	test("watch streams the feed and exits", async () => {
 		const job = await start(["NOTIFY WRITE w.txt"]);
-		const { stdout } = await cli(["watch", job, "--from-start", "--interval", "0.1"]);
+		const { stdout } = await cli(["watch", job, "--from-start", "--verbose", "--interval", "0.1"]);
 		const kinds = stdout
 			.trim()
 			.split("\n")

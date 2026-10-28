@@ -26,7 +26,8 @@ export type EndOutcome = "completed" | "aborted" | "failed";
 export type BackendEvent =
 	| { kind: "spawned"; pid: number; argv: string[] }
 	| { kind: "started"; sessionId: string | null; model: string | null }
-	| { kind: "progress"; text: string }
+	/** A note from the worker; `checkpoint` asks for the orchestrator's attention. */
+	| { kind: "progress"; text: string; checkpoint?: boolean }
 	| { kind: "tool_start"; id: string; name: string; detail: string }
 	| { kind: "tool_end"; id: string; name: string; isError: boolean; text: string }
 	| {

@@ -179,7 +179,11 @@ export class OmpRpcProtocol {
 		const args = isRecord(f.arguments) ? f.arguments : {};
 		if (name === NOTIFY_TOOL) {
 			this.#opts.send(textResult(id, "Noted."));
-			this.#opts.emit({ kind: "progress", text: str(args.message) });
+			this.#opts.emit({
+				kind: "progress",
+				text: str(args.message),
+				checkpoint: args.checkpoint === true,
+			});
 		} else if (name === ASK_TOOL) {
 			this.#opts.emit({
 				kind: "question",

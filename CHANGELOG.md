@@ -2,6 +2,38 @@
 
 ## Unreleased: v1
 
+### M4: scheduler, dependencies, budgets, and waking the orchestrator less
+
+- Attention: the orchestrator is woken only when it has something to do. `wait` returns (exit 4)
+  for a question, an approval, an interrupted job, a **checkpoint** (the worker calls
+  `notify_orchestrator` with `checkpoint: true`; plain progress notes never wake) or a
+  **stalled** worker (no activity for `--stall-timeout`, default 10m; five failing tool calls in a
+  row; or the same call failing three times). Notices are delivered once. The last output line
+  says why: `WAKE: <job> checkpoint` or `WAKE: done (3 completed, 1 skipped)`. A finished job's
+  report is cut to 40 lines there (`result --full` has it all). `wait --no-checkpoint` ignores
+  checkpoints.
+- `watch` piped (Monitor, scripts) prints only lines that need the orchestrator (questions,
+  approvals, checkpoints, stalls, errors, the end); `--verbose` prints everything. `run --detach`
+  no longer suggests a Monitor feed, only a background `wait`.
+- Approval rules: `--allow GLOB` / `--deny GLOB` (repeatable, also `allow`/`deny` in config
+  defaults and presets; they add up) decide matching approvals without asking. `tool:<name>`
+  matches a whole tool. Deny wins; an allow rule never matches a command that chains, pipes or
+  redirects. Decisions show in the feed as `AUTO-APPROVE`/`AUTO-DENY`.
+- Dependencies: `--after <job>[,<job>]` keeps a job `blocked` until they end; it is `skipped` if
+  one did not complete (down the whole chain), unless `--after-any-outcome`.
+  `{{result:<job>}}` in a prompt is replaced by that job's report when the job starts.
+- Groups: `-g/--group NAME`, `wait --group`, `list --group`, `summary <group>`.
+- Concurrency: `max_concurrent` (default 4), per group (`groups.<name>.max_concurrent` or the
+  plan), and `max_writers_per_repo` (default 1) for jobs that edit a checkout without a worktree.
+  Waiting jobs are `queued`. `cancel` works on blocked and queued jobs.
+- Budgets: `--budget USD` (or `budget` in a preset) stops a job as `over_budget`;
+  `groups.<name>.budget_usd` and `daily_budget_usd` stop running jobs and keep new ones from
+  starting.
+- `plan apply <file.yaml|json> [--dry-run]`: a group of tasks with `after`, defaults, briefs
+  relative to the plan file and `{{result:<task>}}`; checked for unknown names and cycles before
+  anything is created.
+- Limits come from the user config and plan files only; a repository cannot raise them.
+
 ### M3: worktree isolation
 
 - `--isolate auto|worktree|none` on `run` (also an `isolate` config setting). `auto`, the default,
