@@ -33,7 +33,29 @@ Users can also define named presets (model + thinking + access + timeout) in
 | `edit` (default) | `--approval-mode write`: file edits run freely; each `bash`/`eval` call waits for your `omp-task approve` | code changes; approve the test command, deny anything else                             |
 | `full`           | `--approval-mode yolo`: everything incl. shell, no approvals                                              | tasks that run many commands themselves; use in a git worktree or a tree you can reset |
 
-omp runs in RPC mode under a supervisor. In `edit` mode an approval request pauses the worker,
-and `omp-task wait` returns with exit 4 so you can decide. Approvals left unanswered are denied
-after `--approval-timeout` (default 20m). `ask_orchestrator` and `notify_orchestrator` are
-available at every level.
+In `edit` mode an approval request pauses the worker and `omp-task wait` returns with exit 4,
+unless an approval rule decides it. Unanswered approvals are denied after `--approval-timeout`
+(default 20m). `ask_orchestrator` and `notify_orchestrator` work at every level.
+
+## Approval rules
+
+`--allow GLOB` approves and `--deny GLOB` denies matching requests without waking you
+(repeatable; also `allow`/`deny` in config defaults and presets, which add up). A rule matches
+the command text (`bun test*`, `git diff*`), or a whole tool when written `tool:<name>`. Deny
+wins. An allow rule never matches a command that chains, pipes or redirects (`;`, `&&`, `|`,
+`>`, `$(`), so `bun test*` cannot approve `bun test; rm -rf ~`.
+
+## Isolation
+
+`--isolate auto` (default) runs `--access full` jobs in a git worktree of the repo (branch
+`omp/<job id>`) and others in the checkout. `--isolate worktree` forces a worktree (needs a
+commit), `none` forces the checkout. A worktree job leaves your checkout untouched: inspect with
+`omp-task diff <id>`, bring it over with `omp-task apply <id>`, or `discard`. `continue` keeps
+working in the same worktree. Use worktrees for `full` access and for parallel writers.
+
+## Budgets and limits
+
+`--budget USD` stops a job as `over_budget` once it spends more. Group budgets
+(`groups.<name>.budget_usd` or a plan's `budget_usd`) and `daily_budget_usd` keep new jobs from
+starting and stop running ones. `max_concurrent` (default 4) and `max_writers_per_repo`
+(default 1) queue jobs; queued jobs start by themselves.

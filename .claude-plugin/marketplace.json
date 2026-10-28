@@ -7,9 +7,9 @@
   },
   "plugins": [
     {
-      "name": "omp-delegate",
+      "name": "omp",
       "source": ".",
-      "description": "Delegate scoped tasks from Claude to the omp agent on any model, then review and iterate."
+      "description": "Delegate, supervise, isolate and review: Claude orchestrates omp workers on any model."
     }
   ]
 }

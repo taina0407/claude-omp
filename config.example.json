@@ -1,7 +1,8 @@
 {
   "defaults": {
     "access": "edit",
-    "timeout": "30m"
+    "timeout": "30m",
+    "allow": ["git status*", "git diff*", "git log*"]
   },
   "presets": {
     "cheap": {
@@ -12,7 +13,9 @@
     "builder": {
       "model": "default",
       "access": "full",
-      "timeout": "45m"
+      "isolate": "worktree",
+      "timeout": "45m",
+      "budget": 1.5
     },
     "reviewer": {
       "model": "slow",
@@ -24,5 +27,16 @@
       "model": "designer",
       "access": "edit"
     }
+  },
+  "max_concurrent": 4,
+  "max_writers_per_repo": 1,
+  "daily_budget_usd": 10,
+  "on_session_end": "keep",
+  "stop_gate": {
+    "enabled": false,
+    "model": "smol",
+    "timeout": "3m",
+    "min_severity": "high",
+    "max_per_session": 3
   }
 }

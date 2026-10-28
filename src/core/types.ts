@@ -75,6 +75,8 @@ export interface JobSpec {
 	stallTimeoutS?: number | null;
 	/** Set for review jobs (`omp-task review`): they must hand in a review with submit_review. */
 	review?: ReviewSpec | null;
+	/** The Claude Code session that started the job, when the plugin's hooks are active. */
+	claudeSession?: string | null;
 }
 
 export interface Job extends JobSpec {
@@ -117,6 +119,7 @@ export interface Job extends JobSpec {
 	/** Things the orchestrator should see that are not questions or approvals; `wait` consumes them. */
 	notices: Notice[];
 	review: ReviewSpec | null;
+	claudeSession: string | null;
 }
 
 export type NoticeKind = "checkpoint" | "stalled";

@@ -22,6 +22,8 @@ import {
 	planBody,
 	pruneBody,
 	reviewBody,
+	type SessionEndResponse,
+	sessionEndBody,
 	shutdownBody,
 	type WaitResponse,
 	type WaitView,
@@ -306,6 +308,9 @@ export class Daemon {
 		if (resource === "feed" && method === "GET") return this.#feed(url);
 		if (resource === "prune" && method === "POST") return this.#prune(await body(req, pruneBody));
 		if (resource === "plans" && method === "POST") return this.#plan(await body(req, planBody));
+		if (resource === "sessions" && ref && action === "end" && method === "POST") {
+			return this.#sessionEnd(ref, await body(req, sessionEndBody));
+		}
 		if (resource === "reviews" && method === "POST") {
 			return this.#review(await body(req, reviewBody));
 		}
@@ -364,6 +369,24 @@ export class Daemon {
 		const job = createJob(this.store, b.options, parent);
 		this.#schedule();
 		return json(this.#view(this.store.getJob(job.id) as Job), 201);
+	}
+
+	/** A Claude Code session ended; with `cancel`, its unfinished jobs go with it. */
+	#sessionEnd(session: string, b: z.infer<typeof sessionEndBody>): Response {
+		const cancelled: string[] = [];
+		if (b.cancel) {
+			for (const job of this.store.listJobs({ limit: 10_000, claudeSession: session })) {
+				if (!isActive(job.status) && job.status !== "interrupted") continue;
+				const runner = this.#runners.get(job.id);
+				if (runner) runner.cancel();
+				else this.#endUnstarted(job, "cancelled", "its Claude Code session ended");
+				cancelled.push(job.id);
+			}
+			this.#schedule();
+		}
+		log("info", "claude session ended", { session, cancelled });
+		const res: SessionEndResponse = { cancelled };
+		return json(res);
 	}
 
 	#review(b: z.infer<typeof reviewBody>): Response {

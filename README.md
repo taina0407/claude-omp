@@ -1,220 +1,174 @@
-# omp-delegate
+# omp
 
 A Claude Code plugin that makes Claude the **orchestrator** and [omp (oh-my-pi)](https://github.com/can1357/oh-my-pi)
 the **worker**. Claude writes a scoped brief and hands it to omp, which runs whatever model you
-pick (GPT, Gemini, DeepSeek, Claude, local…). While the job runs, Claude supervises it live:
-it answers the worker's questions, approves shell commands, and can steer or abort the job.
-Afterwards it reviews the diff and sends follow-ups into the same omp session until the result
-is right. Claude is woken up by events instead of polling.
+pick (GPT, Gemini, DeepSeek, Claude, local…). A per-user daemon supervises the job and wakes
+Claude only when it is needed: a question, an approval, a checkpoint the worker reports, a
+stalled worker, or the end. Claude then reviews the result (or has another model review it),
+applies it from an isolated worktree, and iterates in the same omp session.
 
 ```
-             brief · steer · reply · approve · abort
-you ─► Claude ─────────────────────────────────────► supervisor ──RPC──► omp --mode rpc (any model)
-         ▲          (unix socket per job)                │   ▲ ask_orchestrator / notify_orchestrator
-         └──── wait (exit 0/1/4) · watch feed ◄──────────┘   └ approval requests for shell commands
+             brief · steer · reply · approve · cancel
+you ─► Claude ──────────────────────────────► omp-task ──unix socket──► daemon ──RPC──► omp --mode rpc
+         ▲                                                    │  scheduler · budgets · worktrees
+         └─── wait returns only when Claude is needed ◄───────┘  approval rules · review gate
 ```
 
-It has two parts:
+What it gives you:
 
-- **`delegate` skill** (`skills/delegate/SKILL.md`). It covers when to delegate, how to write a
-  brief and pick a model and access level, how to supervise a job without polling, and how to
-  review the result.
-- **`omp-task` CLI** (`skills/delegate/scripts/omp-task`). It is one Python file with no
-  dependencies. It starts a detached supervisor per job that drives `omp --mode rpc`. It records
-  everything and returns a compact result: status, model, cost, tools used, changed files and
-  the worker's report. You can also use it on its own from a shell, and other agents can drive
-  it.
+- **Delegation without babysitting.** `omp-task wait` blocks in the background and returns only
+  for something Claude must act on. Routine approvals are decided by rules (`--allow 'bun
+  test*'`), plain progress notes never wake Claude, and the daemon itself notices a stalled
+  worker. A 10-minute job typically costs Claude two or three turns.
+- **Isolation.** `--isolate worktree` (the default for `--access full`) runs the job in a git
+  worktree; `diff`, `apply` (checked first, `--3way` for conflicts) and `discard` bring the work
+  over or drop it.
+- **Fan-out.** Groups, `--after` dependencies with `skipped` propagation, result passing
+  (`{{result:<job>}}`), concurrency limits, per-job/group/day budgets, and `plan apply` for a
+  whole YAML DAG.
+- **Structured review.** `omp-task review` (uncommitted, `--staged`, `--base`, `--commit`, or a
+  worktree job) runs a read-only reviewer that must return a schema-checked verdict and
+  findings. An opt-in Stop hook can run it on every changed turn and block on serious findings.
+- **Crash safety.** Jobs survive a daemon restart as `interrupted` and `resume` in the same omp
+  session.
 
 ## Requirements
 
-- [Claude Code](https://code.claude.com)
-- `omp` on `PATH`, with at least one provider logged in (`omp login`, then check with `omp models`)
-- Python 3.9 or later
-- git (optional; needed for changed-file detection)
+- [Claude Code](https://code.claude.com) 2.1.91 or later (plugin `bin/` on PATH)
+- [Bun](https://bun.sh) 1.3 or later (`curl -fsSL https://bun.sh/install | bash`)
+- `omp` on `PATH`, with at least one provider logged in (`omp login`, then check `omp models`)
+- git (for worktrees, reviews and changed-file detection)
 
 ## Install
 
-### As a plugin (recommended, works on any machine)
-
-From GitHub:
+### As a plugin
 
 ```bash
 claude plugin marketplace add taina0407/claude-omp
 ```
 
 ```bash
-claude plugin install omp-delegate@omp-tools
+claude plugin install omp@omp-tools
 ```
 
-From a local checkout (`git clone https://github.com/taina0407/claude-omp`):
+Then run `/omp:setup` in Claude Code. It installs the CLI's dependencies on first use, creates
+`~/.config/claude-omp/config.json` from [config.example.json](config.example.json) and checks
+omp. Upgrading from 0.2: the plugin was renamed from `omp-delegate`; uninstall that one
+(`claude plugin uninstall omp-delegate@omp-tools`).
+
+### From a checkout
 
 ```bash
 ./install.sh
 ```
 
-`install.sh` adds this checkout as the `omp-tools` marketplace, installs the plugin at user
-scope, links `omp-task` into `~/.local/bin`, and creates `~/.config/claude-omp/config.json` from
-`config.example.json` if it doesn't exist yet.
-
-### Dev mode (edits apply live)
-
-```bash
-./install.sh --link
-```
-
-This symlinks the checkout to `~/.claude/skills/omp-delegate`, where Claude Code loads it as
-`omp-delegate@skills-dir`. Run `/reload-plugins` after each change.
-
-Other options: `./install.sh --cli` installs only the CLI, and `./install.sh --uninstall`
-removes everything.
+This installs dependencies, links `omp-task` into `~/.local/bin`, creates the config and
+installs the plugin from the checkout. `./install.sh --cli` does everything except the plugin.
 
 ## Use
 
-In Claude Code:
+Ask Claude in plain words ("delegate the pagination to omp with deepseek", "have another model
+review my changes", "run these three refactors in parallel"), or use the commands:
 
-```
-/omp-delegate:delegate add pagination to the orders endpoint, use deepseek
-```
+| Command | What it does |
+|---|---|
+| `/omp:delegate <task>` | The delegate skill: brief → run → wait → answer → review → apply → report |
+| `/omp:review [--staged \| --base REF \| --commit SHA \| --job ID] [--focus …]` | Read-only review with structured findings |
+| `/omp:adversarial-review …` | The same, with a reviewer that tries to break the change |
+| `/omp:status [JOB \| --group G]` | Jobs of this repository, one job, or a group |
+| `/omp:result JOB` | A job's report, changed files and cost |
+| `/omp:cancel JOB` | Cancel a job (dependents are skipped) |
+| `/omp:transfer` | The command to continue this conversation in omp itself |
+| `/omp:setup [--stop-gate on\|off]` | Check the setup, create the config, toggle the Stop gate |
 
-You can also just ask: _"let omp do the test scaffolding with a cheap model"_, or _"get a second
-opinion on this design from gpt via omp, read-only"_.
+### The CLI
 
-From a shell:
-
-```bash
-omp-task doctor
-```
-
-Start a job; this prints the job id at once:
-
-```bash
-omp-task run --detach --brief task.md --model smol --cwd ~/code/app
-```
-
-Block until the job is done or needs you. Exit 4 means it is waiting on you:
+`omp-task` works on its own too (from a shell, a script, another agent):
 
 ```bash
-omp-task wait <id>
-```
-
-Answer the worker's question, or decide on a shell command it wants to run:
-
-```bash
-omp-task reply <id> "use the existing pagination helper"
+omp-task run --detach -m smol --allow 'bun test*' --brief brief.md
 ```
 
 ```bash
-omp-task approve <id> --session
+omp-task wait 20261028-143002-ab12
 ```
 
-Redirect a running job, or stop it:
+| Command | |
+|---|---|
+| `run [text]`, `continue <job> [text]` | Start a task / continue a finished job's omp session |
+| `wait <job…> \| --group G` | Block until done or a job needs you (exit 4) |
+| `reply`, `approve [--session\|--deny]`, `steer`, `cancel` | Talk to a running job |
+| `resume <job>` | Continue a job interrupted by a daemon restart |
+| `status`, `result [--full]`, `list [-C dir] [--group G]`, `summary <group>` | Look at jobs |
+| `diff`, `apply [--3way] [--keep]`, `discard`, `prune` | Worktree jobs |
+| `review […]` | Structured read-only review |
+| `plan apply <file> [--dry-run]` | A group of jobs with dependencies from YAML/JSON |
+| `watch <job…> [--verbose]` | Event stream (piped: attention lines only) |
+| `doctor`, `setup`, `daemon [status\|stop]`, `hook <name>` | Housekeeping |
 
-```bash
-omp-task steer <id> "skip the docs, focus on the endpoint"
-```
+Every reporting command takes `--json`. `omp-task --help` lists all flags.
 
-```bash
-omp-task cancel <id>
-```
+Exit codes: 0 completed · 1 failed, cancelled, timeout, skipped or over budget · 2 usage error ·
+3 `--max-wait` expired · 4 a job needs you · 5 the daemon is unavailable.
 
-Stream one line per event (handy with Claude's Monitor tool):
+### Access, isolation, rules
 
-```bash
-omp-task watch <id> --quiet
-```
+| `--access` | omp runs with | Use for |
+|---|---|---|
+| `read` | read/search tools only | research, review, planning |
+| `edit` (default) | file edits free; each shell command waits for `approve` or a rule | code changes |
+| `full` | everything, no approvals (in a worktree by default) | tasks that run many commands |
 
-Send a follow-up into the same omp session after the job ends:
+`--allow GLOB` / `--deny GLOB` decide approvals without asking (`tool:<name>` for a whole
+tool). Deny wins, and an allow rule never matches a command that chains, pipes or redirects.
 
-```bash
-omp-task continue <id> "tests in orders.spec.ts still fail: …"
-```
+### Configuration
 
-Without `--detach`, `run` waits like `wait` does. `status`, `result` and `list` report on
-jobs. Every command takes `--json`. Run `omp-task <command> --help` for all flags.
+`~/.config/claude-omp/config.json` (see [config.example.json](config.example.json)):
 
-### Exit codes
+- `defaults` and named `presets` (`--preset NAME`): model, access, thinking, timeout, isolate,
+  allow/deny, budget, stall_timeout.
+- `max_concurrent` (4), `max_writers_per_repo` (1), `groups.<name>.{max_concurrent,budget_usd}`,
+  `daily_budget_usd`.
+- `auto_resume`, `daemon_idle_timeout` (15m), `on_session_end` (`keep` or `cancel` the
+  session's jobs).
+- `stop_gate`: `enabled`, `model` (smol), `timeout` (3m), `min_severity` (high),
+  `max_per_session` (3), `focus`.
 
-| Code | Meaning                                       |
-| ---- | --------------------------------------------- |
-| 0    | all jobs completed                            |
-| 1    | a job failed, was cancelled, or timed out     |
-| 2    | usage error                                   |
-| 3    | `--max-wait` expired                          |
-| 4    | a job is waiting for an answer or an approval |
-
-### Supervising without polling (Claude Code)
-
-The skill tells Claude to:
-
-1. start jobs with `run --detach`;
-2. run `omp-task wait <ids>` as a **background** command. Claude is notified when that command
-   exits, which happens when all jobs are done or one needs an answer;
-3. optionally also run `omp-task watch <ids>` under the **Monitor** tool. Each feed line
-   (question, approval, edit, shell command, progress, end) then reaches Claude as it happens,
-   so Claude can steer early.
-
-Questions and approvals that nobody answers expire (`--answer-timeout`, `--approval-timeout`,
-default 20m each). When a question expires, the worker carries on with a stated assumption.
-When an approval expires, the command is denied.
-
-### Models
-
-`--model` is passed through to `omp --model`, so it accepts:
-
-- **role names** (`smol`, `task`, `default`, `slow`, `plan`, `designer`, `vision`). These resolve
-  through `modelRoles` in `~/.omp/agent/config.yml`, which keeps briefs portable between machines.
-- **fuzzy names** (`opus`, `deepseek`)
-- **exact ids** (`openai/gpt-6-luna:high`)
-
-### Access levels
-
-| `--access`       | Worker can                                                       | omp flags                                     |
-| ---------------- | ---------------------------------------------------------------- | --------------------------------------------- |
-| `read`           | read and search only                                             | `--tools read,grep,find,glob,web_search,todo` |
-| `edit` (default) | edit files; each shell/eval command waits for `omp-task approve` | `--approval-mode write`                       |
-| `full`           | everything, shell included, no approvals                         | `--approval-mode yolo`                        |
-
-Use `full` only in a git worktree or in a tree you can reset. The `ask_orchestrator` and
-`notify_orchestrator` tools are available at every level.
-
-### Presets
-
-Presets are named bundles of `model`, `access`, `thinking`, `timeout` and `omp_args`. Define them
-in `~/.config/claude-omp/config.json` (see `config.example.json`) and select one with
-`--preset NAME`. The `defaults` block in the same file applies to every run.
-
-## How a job works
-
-1. `omp-task` stores the prompt in a job folder, `~/.local/state/claude-omp/jobs/<id>/`, and
-   starts a detached **supervisor** process for the job.
-2. The supervisor takes a git snapshot of the dirty files in the repo. Then it starts
-   `omp --mode rpc` with the access flags and the chosen model. For a new session it also
-   appends the worker preamble (`skills/delegate/prompts/worker-preamble.md`), which tells omp
-   to stay inside the brief's edit fence, ask rather than guess, not commit, and end with a
-   fixed report format.
-3. Over RPC, the supervisor registers two host tools in omp, `ask_orchestrator` and
-   `notify_orchestrator`, reads the session id, and sends the prompt.
-4. It listens on a unix socket in the job folder for `steer`, `abort`, `reply` and `approve`.
-   omp's approval prompts for shell commands become pending approvals, and `ask_orchestrator`
-   calls become pending questions. Both set the job to `waiting`.
-5. It appends one compact line per event to `feed.jsonl`, which `watch` streams, and stores
-   omp's raw frames in `events.jsonl`. It enforces `--timeout` by sending omp an RPC `abort`.
-6. When omp's agent loop ends, the supervisor closes omp and writes the results. `meta.json`
-   gets status, session id, model, tokens, cost, tools, denied tools and errors. `result.md`
-   gets the final message. A second git snapshot is compared with the first to list the
-   changed files.
-7. `continue` starts a child job with `omp --resume <session>`, so the worker keeps its context.
-
+Limits and rules come only from this file and from plan files; a repository cannot raise them.
 Environment overrides: `OMP_TASK_HOME` (state dir), `OMP_TASK_CONFIG` (config file),
-`OMP_TASK_OMP_BIN` (omp binary).
+`OMP_TASK_OMP_BIN` (omp binary), `OMP_TASK_DAEMON_IDLE` (seconds).
+
+## How it works
+
+- `omp-task` is a thin client. It talks HTTP over a unix socket to a per-user daemon, starting
+  it on demand; the daemon stops after 15 idle minutes and restarts itself when the CLI is a
+  newer version.
+- The daemon keeps jobs in SQLite (`~/.local/state/claude-omp/state.db`) and runs each one as
+  `omp --mode rpc` with the access flags and model, plus the worker preamble
+  ([src/prompts/worker-preamble.md](src/prompts/worker-preamble.md)): stay inside the edit
+  fence, ask rather than guess, do not commit, end with a fixed report.
+- Over RPC it registers host tools in omp (`ask_orchestrator`, `notify_orchestrator`, and
+  `submit_review` for reviews), turns omp's approval prompts into pending approvals (or decides
+  them by rule), records cost and tools as they change, and enforces timeouts and budgets.
+- Each job keeps its prompt, raw RPC frames (`events.jsonl`), result and review under
+  `~/.local/state/claude-omp/jobs/<id>/`.
+- The plugin's hooks remember the Claude session id for jobs (SessionStart), optionally cancel
+  them when the session ends (SessionEnd), and run the opt-in review gate (Stop).
 
 ## Develop
 
-The tests use a fake `omp` binary, so they need no provider access and cost nothing:
+```bash
+bun install
+```
 
 ```bash
-python3 -m unittest discover tests
+bun run check
 ```
+
+The tests drive the real CLI and daemon against a fake `omp` (`tests/fake-omp`) and replay
+recorded omp RPC transcripts (`tests/fixtures/rpc`), so they need no provider access and cost
+nothing. `bun run record` re-records the transcripts against a real omp.
 
 ```bash
 claude plugin validate . --strict

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# omp-task launcher for the Claude Code plugin (on the Bash tool's PATH via the plugin's bin/).
+# Runs the CLI with Bun from this checkout, installing its runtime dependencies on first use.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+
+BUN="$(command -v bun || true)"
+[[ -z "$BUN" && -x "$HOME/.bun/bin/bun" ]] && BUN="$HOME/.bun/bin/bun"
+if [[ -z "$BUN" ]]; then
+  echo "omp-task needs Bun (https://bun.sh): curl -fsSL https://bun.sh/install | bash" >&2
+  exit 5
+fi
+if [[ ! -d "$ROOT/node_modules/zod" ]]; then
+  (cd "$ROOT" && "$BUN" install --production --frozen-lockfile --silent) >&2 || {
+    echo "omp-task: 'bun install' failed in $ROOT" >&2
+    exit 5
+  }
+fi
+exec "$BUN" "$ROOT/src/cli/main.ts" "$@"

@@ -1,0 +1,38 @@
+{
+  "description": "omp plugin: remember the Claude session for omp jobs, optionally cancel them when it ends, and the opt-in Stop review gate.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/omp-task\" hook session-start",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/omp-task\" hook session-end",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/omp-task\" hook stop-gate",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

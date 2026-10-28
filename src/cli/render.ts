@@ -78,6 +78,7 @@ export function jobJson(job: Job, pending: Pending[], full = false) {
 		budget_usd: job.budgetUsd,
 		notices: job.notices,
 		review_of: job.review,
+		claude_session: job.claudeSession,
 		review: reviewOf(job),
 		created_at: job.createdAt,
 		finished_at: job.finishedAt,

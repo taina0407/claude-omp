@@ -7,8 +7,8 @@
  * 4 a job needs the orchestrator (a question, an approval, or an interrupted job to resume),
  * 5 the daemon could not be started or reached.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
 import type {
 	ApplyResponse,
@@ -34,6 +34,7 @@ import {
 } from "../core/types";
 import { errorText, parseDuration, UsageError } from "../core/util";
 import { runDaemon } from "../daemon/server";
+import { hookMain } from "../hooks/hooks";
 import { VERSION } from "../version";
 import { type Client, connect, DaemonError, existingDaemon } from "./client";
 import { ATTENTION_FEED_KINDS, emitJob, formatFeed, out } from "./render";
@@ -104,6 +105,8 @@ Commands:
   summary <group>          status, cost and changed files of every job in a group
   plan apply <file>        create a group of jobs with dependencies from a YAML/JSON plan
   doctor                   check the omp install, the daemon and the configuration
+  setup [--stop-gate on|off]  create the config file if missing; turn the Stop review gate on/off
+  hook <name>              run a Claude Code hook (session-start, session-end, stop-gate)
   daemon [status|stop]     run the daemon in the foreground, show it, or stop it (--force)
 
 Task options (run, continue):
@@ -187,6 +190,7 @@ function readText(values: Values, positionals: string[]): string {
 
 function jobOptions(values: Values, prompt: string): JobOptions {
 	const opts: JobOptions = { prompt, clientCwd: process.cwd() };
+	if (process.env.OMP_TASK_CLAUDE_SESSION) opts.claudeSession = process.env.OMP_TASK_CLAUDE_SESSION;
 	const str = (k: string) => values[k] as string | undefined;
 	if (str("model")) opts.model = str("model");
 	if (str("preset")) opts.preset = str("preset");
@@ -706,6 +710,34 @@ const commands: Record<string, Command> = {
 		return 0;
 	},
 
+	async setup(argv) {
+		const { values } = parse(argv, { "stop-gate": { type: "string" } });
+		const gate = values["stop-gate"] as string | undefined;
+		if (gate !== undefined && gate !== "on" && gate !== "off") {
+			throw new UsageError("--stop-gate takes on or off");
+		}
+		const file = configFile();
+		if (!existsSync(file)) {
+			mkdirSync(dirname(file), { recursive: true });
+			copyFileSync(join(import.meta.dir, "../../config.example.json"), file);
+			out(`created ${file} from config.example.json`);
+		}
+		if (gate) {
+			loadConfig(file); // refuse to rewrite a file that does not parse
+			const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+			const current = (raw.stop_gate ?? {}) as Record<string, unknown>;
+			raw.stop_gate = { ...current, enabled: gate === "on" };
+			writeFileSync(file, `${JSON.stringify(raw, null, 2)}\n`);
+			out(`stop gate ${gate === "on" ? "enabled" : "disabled"} in ${file}`);
+		}
+		out();
+		return commands.doctor?.([]) ?? 0;
+	},
+
+	async hook(argv) {
+		return hookMain(argv[0]);
+	},
+
 	async doctor() {
 		const bin = ompBin();
 		out(`omp binary:   ${bin ?? "NOT FOUND"}`);
@@ -729,6 +761,13 @@ const commands: Record<string, Command> = {
 		const presets = Object.keys(loadConfig().presets ?? {});
 		if (presets.length) out(`presets:      ${presets.join(", ")}`);
 		out(`preamble:     ${PREAMBLE_FILE} (${existsSync(PREAMBLE_FILE) ? "ok" : "missing"})`);
+		const gate = loadConfig().stop_gate;
+		out(
+			`stop gate:    ${gate?.enabled ? `on (${gate.model ?? "smol"})` : "off (omp-task setup --stop-gate on)"}`,
+		);
+		out(
+			`claude:       ${process.env.OMP_TASK_CLAUDE_SESSION ? `session ${process.env.OMP_TASK_CLAUDE_SESSION}` : "no session id (hooks not active)"}`,
+		);
 		return bin ? 0 : EXIT_FAILED;
 	},
 

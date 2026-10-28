@@ -30,7 +30,15 @@ export const jobOptions = z.object({
 	allow: z.array(z.string()).optional(),
 	deny: z.array(z.string()).optional(),
 	stallTimeout: optionalString,
+	claudeSession: optionalString,
 });
+
+export const sessionEndBody = z.object({ cancel: z.boolean() });
+
+export interface SessionEndResponse {
+	/** Active jobs of the session that were cancelled. */
+	cancelled: string[];
+}
 
 export const createJobBody = z.object({
 	parent: z.string().nullable().optional(),

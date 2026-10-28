@@ -1,8 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
-  "name": "omp-delegate",
-  "version": "0.2.1",
-  "description": "Let Claude orchestrate the omp (oh-my-pi) coding agent: delegate scoped tasks to any model omp supports, supervise them live over omp's RPC mode (questions, shell approvals, steer, abort) without polling, then review and iterate in the same session.",
+  "name": "omp",
+  "version": "1.0.0-alpha.4",
+  "description": "Let Claude orchestrate the omp (oh-my-pi) coding agent: delegate scoped tasks to any model omp supports, supervise them through a per-user daemon that only wakes Claude when it is needed, isolate them in git worktrees, fan them out with dependencies and budgets, and get structured code reviews from another model.",
   "author": {
     "name": "Tai NA",
     "url": "https://github.com/taina0407"
@@ -16,6 +16,8 @@
     "delegation",
     "orchestration",
     "multi-model",
-    "subagent"
+    "subagent",
+    "code-review",
+    "worktree"
   ]
 }

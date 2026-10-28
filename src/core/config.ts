@@ -50,6 +50,24 @@ const configSchema = z.looseObject({
 	daily_budget_usd: z.number().positive().optional(),
 	/** Default limits per group name; `plan apply` can set them too. */
 	groups: z.record(z.string(), groupLimits).optional(),
+	/** When a Claude Code session ends: keep its running jobs (default) or cancel them. */
+	on_session_end: z.enum(["keep", "cancel"]).optional(),
+	/** Opt-in Stop hook: review uncommitted changes before Claude finishes a turn. */
+	stop_gate: z
+		.looseObject({
+			enabled: z.boolean().optional(),
+			/** Reviewer model (default smol). */
+			model: z.string().optional(),
+			/** Review time limit (default 3m). */
+			timeout: duration.optional(),
+			/** Lowest severity that blocks (default high). */
+			min_severity: z.enum(["critical", "high", "medium", "low"]).optional(),
+			/** Reviews per Claude session at most (default 3). */
+			max_per_session: z.number().int().positive().optional(),
+			/** Passed to the reviewer as --focus. */
+			focus: z.string().optional(),
+		})
+		.optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

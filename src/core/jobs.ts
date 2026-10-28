@@ -56,6 +56,8 @@ export interface JobOptions {
 	 * is then readable by the worker, and `{{job_dir}}` in the prompt names it.
 	 */
 	attachments?: Record<string, string> | undefined;
+	/** Set by the CLI from OMP_TASK_CLAUDE_SESSION (written by the SessionStart hook). */
+	claudeSession?: string | undefined;
 }
 
 function settingsOf(job: Job): Settings {
@@ -139,6 +141,7 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 		throw new UsageError("group names use letters, digits, '.', '-' and '_' (at most 64)");
 	}
 	if (opts.review) spec.review = opts.review;
+	spec.claudeSession = opts.claudeSession ?? parent?.claudeSession ?? null;
 	const id = newJobId();
 	const dir = jobDir(id);
 	mkdirSync(dir, { recursive: true });

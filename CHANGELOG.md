@@ -2,6 +2,26 @@
 
 ## Unreleased: v1
 
+### M6: plugin layer
+
+- The plugin is now called **`omp`** (was `omp-delegate`): `/omp:delegate`, `/omp:review`,
+  `/omp:adversarial-review`, `/omp:status`, `/omp:result`, `/omp:cancel`, `/omp:transfer`,
+  `/omp:setup`. Uninstall `omp-delegate@omp-tools` when upgrading.
+- `bin/omp-task` puts the v1 CLI on Claude's PATH (Claude Code 2.1.91+). It runs on Bun and
+  installs its runtime dependency on first use. The v0.2 Python CLI and its tests are gone;
+  Python is no longer needed.
+- Hooks: SessionStart tags jobs with the Claude session id (`claude_session` in `--json`);
+  SessionEnd cancels the session's jobs when `on_session_end` is `cancel` (default `keep`); the
+  opt-in Stop gate (`stop_gate` in the config, `omp-task setup --stop-gate on`) reviews the
+  uncommitted changes with a cheap model when Claude finishes a turn and blocks the stop on
+  findings at `min_severity` (default high) or above. It reviews each state of the tree once,
+  at most `max_per_session` times, and never when a stop hook is already active.
+- `omp-task setup [--stop-gate on|off]` creates the config from the example and toggles the
+  gate; `omp-task hook <name>` runs a hook; `doctor` shows the gate and the Claude session.
+- The `delegate` skill is rewritten for v1 around one rule: start detached, `wait` in the
+  background, end the turn. New reference `fan-out.md` for groups, dependencies and plan files.
+- `install.sh` installs with Bun and removes the old plugin; CI drops the Python job.
+
 ### M5: structured review
 
 - `omp-task review` runs a read-only job that must hand in its review through the

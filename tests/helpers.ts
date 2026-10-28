@@ -106,6 +106,23 @@ export class Sandbox {
 		return { code, stdout, stderr };
 	}
 
+	/** Runs `omp-task hook <name>` with the hook's JSON on stdin, as Claude Code does. */
+	async hook(name: string, input: unknown, env: Record<string, string> = {}): Promise<Result> {
+		const p = Bun.spawn([process.execPath, CLI, "hook", name], {
+			cwd: this.repo,
+			env: { ...this.env, ...env },
+			stdin: new Blob([JSON.stringify(input)]),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, code] = await Promise.all([
+			new Response(p.stdout).text(),
+			new Response(p.stderr).text(),
+			p.exited,
+		]);
+		return { code, stdout, stderr };
+	}
+
 	async runJson(args: string[], ok = [0]): Promise<JobJson> {
 		return JSON.parse((await this.cli(["run", "--json", ...args], ok)).stdout) as JobJson;
 	}

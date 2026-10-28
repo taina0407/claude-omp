@@ -101,6 +101,9 @@ const MIGRATIONS: string[] = [
 	);`,
 	// v1 M5: review jobs.
 	`ALTER TABLE jobs ADD COLUMN review TEXT;`,
+	// v1 M6: the Claude Code session that started the job (from the SessionStart hook).
+	`ALTER TABLE jobs ADD COLUMN claude_session TEXT;
+	CREATE INDEX jobs_claude_session ON jobs(claude_session);`,
 ];
 
 type Row = Record<string, unknown>;
@@ -201,11 +204,11 @@ export class Store {
 				`INSERT INTO jobs (id, parent_id, title, status, cwd, access, model, thinking, timeout_s,
 				answer_timeout_s, approval_timeout_s, add_dirs, files, extra_args, no_preamble,
 				resume_session, created_at, isolate, carry_dirty, after, after_any, group_name,
-				budget_usd, allow, deny, stall_timeout_s, review)
+				budget_usd, allow, deny, stall_timeout_s, review, claude_session)
 			VALUES ($id, $parentId, $title, $status, $cwd, $access, $model, $thinking, $timeoutS,
 				$answerTimeoutS, $approvalTimeoutS, $addDirs, $files, $extraArgs, $noPreamble,
 				$resumeSession, $createdAt, $isolate, $carryDirty, $after, $afterAny, $groupName,
-				$budgetUsd, $allow, $deny, $stallTimeoutS, $review)`,
+				$budgetUsd, $allow, $deny, $stallTimeoutS, $review, $claudeSession)`,
 			)
 			.run({
 				id,
@@ -235,6 +238,7 @@ export class Store {
 				deny: JSON.stringify(spec.deny ?? []),
 				stallTimeoutS: spec.stallTimeoutS ?? null,
 				review: spec.review ? JSON.stringify(spec.review) : null,
+				claudeSession: spec.claudeSession ?? null,
 			});
 		return this.getJob(id) as Job;
 	}
@@ -254,9 +258,19 @@ export class Store {
 		return rows.map((r) => String(r.id));
 	}
 
-	listJobs(opts: { limit: number; cwd?: string; status?: string; group?: string }): Job[] {
+	listJobs(opts: {
+		limit: number;
+		cwd?: string;
+		status?: string;
+		group?: string;
+		claudeSession?: string;
+	}): Job[] {
 		const where: string[] = [];
 		const params: (string | number)[] = [];
+		if (opts.claudeSession) {
+			where.push("claude_session = ?");
+			params.push(opts.claudeSession);
+		}
 		if (opts.group) {
 			where.push("group_name = ?");
 			params.push(opts.group);
