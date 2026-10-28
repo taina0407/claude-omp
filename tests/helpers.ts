@@ -65,6 +65,25 @@ export class Sandbox {
 		writeFileSync(this.env.OMP_TASK_CONFIG as string, JSON.stringify(config));
 	}
 
+	/** Runs git in the sandbox repo and returns its stdout. */
+	git(...args: string[]): string {
+		const p = Bun.spawnSync(["git", ...args], {
+			cwd: this.repo,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (p.exitCode !== 0) {
+			throw new Error(`git ${args.join(" ")} → ${p.stderr.toString()}`);
+		}
+		return p.stdout.toString();
+	}
+
+	/** Commits everything in the sandbox repo (worktrees need at least one commit). */
+	commitAll(message = "init"): void {
+		this.git("add", "-A");
+		this.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", message);
+	}
+
 	async cli(
 		args: string[],
 		ok: number[] | null = [0],

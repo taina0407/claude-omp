@@ -77,6 +77,13 @@ const MIGRATIONS: string[] = [
 	CREATE INDEX commands_open ON commands(job_id, handled_at);`,
 	// v1 M2: the daemon hands control commands to runners directly.
 	`DROP TABLE commands;`,
+	// v1 M3: jobs can run in a git worktree of the user's checkout.
+	`ALTER TABLE jobs ADD COLUMN isolate TEXT NOT NULL DEFAULT 'none';
+	ALTER TABLE jobs ADD COLUMN carry_dirty INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE jobs ADD COLUMN worktree_path TEXT;
+	ALTER TABLE jobs ADD COLUMN base_ref TEXT;
+	ALTER TABLE jobs ADD COLUMN branch TEXT;
+	ALTER TABLE jobs ADD COLUMN repo_root TEXT;`,
 ];
 
 type Row = Record<string, unknown>;
@@ -110,6 +117,7 @@ function fromRow<T>(row: Row): T {
 		out[camel(k)] = JSON_COLUMNS.has(k) && typeof v === "string" ? JSON.parse(v) : v;
 	}
 	if ("noPreamble" in out) out.noPreamble = Boolean(out.noPreamble);
+	if ("carryDirty" in out) out.carryDirty = Boolean(out.carryDirty);
 	return out as T;
 }
 
@@ -162,10 +170,10 @@ export class Store {
 			.query(
 				`INSERT INTO jobs (id, parent_id, title, status, cwd, access, model, thinking, timeout_s,
 				answer_timeout_s, approval_timeout_s, add_dirs, files, extra_args, no_preamble,
-				resume_session, created_at)
+				resume_session, created_at, isolate, carry_dirty)
 			VALUES ($id, $parentId, $title, 'queued', $cwd, $access, $model, $thinking, $timeoutS,
 				$answerTimeoutS, $approvalTimeoutS, $addDirs, $files, $extraArgs, $noPreamble,
-				$resumeSession, $createdAt)`,
+				$resumeSession, $createdAt, $isolate, $carryDirty)`,
 			)
 			.run({
 				id,
@@ -184,6 +192,8 @@ export class Store {
 				noPreamble: spec.noPreamble ? 1 : 0,
 				resumeSession: spec.resumeSession,
 				createdAt: nowIso(),
+				isolate: spec.isolate ?? "none",
+				carryDirty: spec.carryDirty ? 1 : 0,
 			});
 		return this.getJob(id) as Job;
 	}

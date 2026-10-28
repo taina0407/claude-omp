@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { MAX_PROMPT_BYTES } from "../backends/omp-rpc/protocol";
 import { ompRpcBackend } from "../backends/omp-rpc/session";
 import type { Backend, BackendEvent, BackendSession } from "../backends/types";
+import { createWorktree, worktreeCwd } from "../isolation/worktree";
 import { changedFiles, type Snapshot, snapshot, withoutDir } from "./git";
 import { jobDir, PREAMBLE_FILE, stateDir } from "./paths";
 import type { Store } from "./store";
@@ -21,7 +22,7 @@ import type {
 	PendingKind,
 	TerminalStatus,
 } from "./types";
-import { nowIso } from "./util";
+import { errorText, nowIso } from "./util";
 
 /** Tools whose calls are worth a feed line: they change things or start sub-work. */
 const FEED_TOOLS = new Set(["write", "edit", "bash", "eval", "task"]);
@@ -71,6 +72,8 @@ export class JobRunner {
 	#started = performance.now();
 	/** Duration of earlier runs of this job (before an interruption). */
 	readonly #baseDurationS: number;
+	/** Where the worker and the git snapshots run: the worktree, or the user's cwd. */
+	#workCwd: string;
 	#gitBefore: Snapshot | null = null;
 	/** The omp session this run resumed after an interruption, if any. */
 	#resumedSession: string | null = null;
@@ -109,6 +112,7 @@ export class JobRunner {
 		this.#tokens = job.tokens;
 		this.#baseCostUsd = job.costUsd;
 		this.#baseDurationS = job.durationS ?? 0;
+		this.#workCwd = worktreeCwd(job);
 		this.#modelUsed = job.modelUsed;
 		this.#done = new Promise((resolve) => {
 			this.#resolveDone = resolve;
@@ -120,8 +124,25 @@ export class JobRunner {
 	 * interrupted job goes on in its omp session (or starts over if it never got one).
 	 */
 	run(opts: { resume?: boolean } = {}): Promise<Job> {
+		if (this.#job.isolate === "worktree" && !this.#job.worktreePath) {
+			try {
+				const wt = createWorktree(this.#job);
+				this.#store.updateJob(this.#job.id, {
+					worktreePath: wt.path,
+					baseRef: wt.baseRef,
+					branch: wt.branch,
+					repoRoot: wt.repoRoot,
+				});
+				this.#job = this.#store.getJob(this.#job.id) as Job;
+				this.#workCwd = wt.cwd;
+				this.#feed("info", `working in worktree ${wt.path} (branch ${wt.branch})`);
+			} catch (e) {
+				void this.#finish("failed", [errorText(e)], null);
+				return this.#done;
+			}
+		}
 		const job = this.#job;
-		this.#gitBefore = this.#loadGitBefore(job);
+		this.#gitBefore = this.#loadGitBefore();
 		this.#store.updateJob(job.id, {
 			status: "starting",
 			startedAt: job.startedAt ?? nowIso(),
@@ -143,7 +164,7 @@ export class JobRunner {
 		const dir = jobDir(job.id);
 		this.#session = this.#backend.start(
 			{
-				cwd: job.cwd,
+				cwd: this.#workCwd,
 				access: job.access,
 				model: job.model,
 				thinking: job.thinking,
@@ -160,10 +181,10 @@ export class JobRunner {
 	}
 
 	/** The dirty-file snapshot from the job's first run, so a resumed job reports all its changes. */
-	#loadGitBefore(job: Job): Snapshot | null {
-		const file = join(jobDir(job.id), "git-before.json");
+	#loadGitBefore(): Snapshot | null {
+		const file = join(jobDir(this.#job.id), "git-before.json");
 		if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8")) as Snapshot | null;
-		const snap = snapshot(job.cwd);
+		const snap = snapshot(this.#workCwd);
 		writeFileSync(file, JSON.stringify(snap));
 		return snap;
 	}
@@ -464,9 +485,9 @@ export class JobRunner {
 		if (this.#tick) clearInterval(this.#tick);
 		await this.#session?.close();
 		const job = this.#job;
-		const after = this.#gitBefore ? snapshot(job.cwd) : null;
+		const after = this.#gitBefore ? snapshot(this.#workCwd) : null;
 		this.#errors.push(...errors);
-		const changed = withoutDir(changedFiles(this.#gitBefore, after), job.cwd, stateDir());
+		const changed = withoutDir(changedFiles(this.#gitBefore, after), this.#workCwd, stateDir());
 		const progress = this.#progress();
 		writeFileSync(join(jobDir(job.id), "result.md"), this.#finalText);
 		this.#store.clearPending(job.id);

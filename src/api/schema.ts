@@ -22,9 +22,23 @@ export const createJobBody = z.object({
 		title: optionalString,
 		ompArgs: optionalString,
 		noPreamble: z.boolean().optional(),
+		isolate: optionalString,
+		carryDirty: z.boolean().optional(),
 	}),
 });
 export type CreateJobBody = z.infer<typeof createJobBody>;
+
+export const applyBody = z.object({
+	threeWay: z.boolean().optional(),
+	keep: z.boolean().optional(),
+});
+export type ApplyBody = z.infer<typeof applyBody>;
+
+export const pruneBody = z.object({
+	olderS: z.number().optional(),
+	dryRun: z.boolean().optional(),
+});
+export type PruneBody = z.infer<typeof pruneBody>;
 
 export const controlBody = z.object({
 	kind: z.enum(["steer", "abort", "reply", "approve"]),
@@ -56,6 +70,24 @@ export interface WaitResponse {
 }
 
 export type ControlResponse = CommandResult;
+
+export interface DiffResponse {
+	patch: string;
+	files: string[];
+}
+
+export interface ApplyResponse {
+	ok: boolean;
+	files: string[];
+	error?: string;
+	/** With --3way: files left with conflict markers in the main checkout. */
+	conflicts?: string[];
+}
+
+export interface PruneResponse {
+	/** The jobs whose worktrees were (or, with dryRun, would be) removed. */
+	removed: string[];
+}
 
 /** One server-sent event on GET /v1/feed. */
 export type FeedEvent =

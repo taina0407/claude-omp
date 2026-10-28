@@ -48,6 +48,10 @@ export function jobJson(job: Job, pending: Pending[], full = false) {
 		changed_files: job.changedFiles,
 		denied_tools: job.deniedTools,
 		errors: job.errors,
+		isolate: job.isolate,
+		worktree: job.worktreePath,
+		branch: job.branch,
+		base_ref: job.baseRef,
 		created_at: job.createdAt,
 		finished_at: job.finishedAt,
 		pending: pending.map(pendingJson),
@@ -86,6 +90,9 @@ export function emitJob(job: Job, pending: Pending[], asJson: boolean, full = fa
 	out(`## omp job ${job.id} — ${job.status.toUpperCase()}`);
 	out(`- title: ${job.title}`);
 	out(`- cwd: ${job.cwd}  access: ${job.access}`);
+	if (job.worktreePath) {
+		out(`- worktree: ${job.worktreePath} (branch ${job.branch ?? "-"})`);
+	}
 	const model = job.modelUsed ?? job.modelResolved ?? job.model ?? "(omp default)";
 	out(`- model: ${model}  session: ${job.sessionId ?? "-"}`);
 	if (job.durationS !== null) {

@@ -2,6 +2,18 @@
 
 ## Unreleased: v1
 
+### M3: worktree isolation
+
+- `--isolate auto|worktree|none` on `run` (also an `isolate` config setting). `auto`, the default,
+  runs `--access full` jobs in a git worktree of the repo when it has a commit; other jobs keep
+  running in the checkout. Worktrees live under the state dir on branch `omp/<job id>`;
+  `--carry-dirty` copies the checkout's uncommitted changes into it. `continue` keeps working in
+  the parent's worktree. Changed files are reported relative to the worktree.
+- New commands: `diff <job> [--stat]`, `apply <job> [--3way] [--keep]` (checks first, so a patch
+  that does not apply changes nothing; with `--3way` conflicts are left as markers and named),
+  `discard <job>`, `prune [--older 7d] [--dry-run]`. Text and `--json` output show the worktree.
+- Implemented by an omp worker (`smol`) from a written brief, reviewed and adjusted here.
+
 ### M2: per-user daemon
 
 - A daemon now owns the job database and runs every job. The CLI talks to it over HTTP on a

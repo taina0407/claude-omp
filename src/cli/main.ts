@@ -10,7 +10,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
-import type { ControlResponse, Health, JobView, WaitResponse } from "../api/schema";
+import type {
+	ApplyResponse,
+	ControlResponse,
+	DiffResponse,
+	Health,
+	JobView,
+	WaitResponse,
+} from "../api/schema";
 import { loadConfig } from "../core/config";
 import type { JobOptions } from "../core/jobs";
 import { configFile, ompBin, PREAMBLE_FILE, socketPath, stateDir } from "../core/paths";
@@ -21,7 +28,7 @@ import {
 	isTerminal,
 	type Job,
 } from "../core/types";
-import { errorText, UsageError } from "../core/util";
+import { errorText, parseDuration, UsageError } from "../core/util";
 import { runDaemon } from "../daemon/server";
 import { VERSION } from "../version";
 import { type Client, connect, DaemonError, existingDaemon } from "./client";
@@ -52,6 +59,8 @@ const TASK_OPTIONS = {
 	title: { type: "string" },
 	"omp-args": { type: "string" },
 	"no-preamble": { type: "boolean" },
+	isolate: { type: "string" },
+	"carry-dirty": { type: "boolean" },
 	detach: { type: "boolean", short: "d" },
 	"max-wait": { type: "string" },
 	json: { type: "boolean" },
@@ -75,6 +84,10 @@ Commands:
   cancel <job>             abort a running job
   status <job>             show a job's state
   result <job>             print a job's result (--full, --json)
+  diff <job> [--stat]      show a worktree job's patch (--stat: one changed file per line)
+  apply <job> [--3way] [--keep]  bring a worktree's changes into the main checkout
+  discard <job>            remove a job's worktree without applying it
+  prune [--older 7d] [--dry-run]  remove worktrees of finished jobs older than this
   list                     list recent jobs (-n, -C, --status, --json)
   doctor                   check the omp install, the daemon and the configuration
   daemon [status|stop]     run the daemon in the foreground, show it, or stop it (--force)
@@ -94,6 +107,8 @@ Task options (run, continue):
   --title TEXT          short label for job listings
   --omp-args ARGS       extra raw omp flags, shell-quoted
   --no-preamble         skip the worker preamble system prompt
+  --isolate MODE        auto (default) | worktree | none
+  --carry-dirty         copy the checkout's uncommitted changes into the worktree
   -d, --detach          return the job id at once instead of waiting
   --max-wait SECONDS    without --detach: stop waiting after N seconds (exit 3)
   --json                machine-readable output
@@ -153,7 +168,16 @@ function jobOptions(values: Values, prompt: string): JobOptions {
 	if (str("title")) opts.title = str("title");
 	if (str("omp-args")) opts.ompArgs = str("omp-args");
 	if (values["no-preamble"]) opts.noPreamble = true;
+	if (str("isolate")) opts.isolate = str("isolate");
+	if (values["carry-dirty"]) opts.carryDirty = true;
 	return opts;
+}
+
+/** `--older` takes parseDuration forms plus days ('7d'); default a week. */
+function pruneSeconds(value: unknown): number {
+	if (value === undefined) return 7 * 24 * 3600;
+	const days = /^(\d+(?:\.\d+)?)d$/.exec(value as string);
+	return days ? Number(days[1]) * 86_400 : (parseDuration(value as string) ?? 0);
 }
 
 const jobPath = (ref: string) => `/v1/jobs/${encodeURIComponent(ref)}`;
@@ -402,6 +426,61 @@ const commands: Record<string, Command> = {
 		if (!ref) throw new UsageError("result needs a job id");
 		const { job, pending } = await getJob(await connect(), ref);
 		emitJob(job, pending, Boolean(values.json), Boolean(values.full));
+		return 0;
+	},
+
+	async diff(argv) {
+		const { values, positionals } = parse(argv, { stat: { type: "boolean" } });
+		const [ref] = positionals;
+		if (!ref) throw new UsageError("diff needs a job id");
+		const client = await connect();
+		const { patch, files } = await client.call<DiffResponse>("GET", `${jobPath(ref)}/diff`);
+		if (values.stat) for (const f of files) out(f);
+		else out(patch);
+		return 0;
+	},
+
+	async apply(argv) {
+		const { values, positionals } = parse(argv, {
+			"3way": { type: "boolean" },
+			keep: { type: "boolean" },
+		});
+		const [ref] = positionals;
+		if (!ref) throw new UsageError("apply needs a job id");
+		const client = await connect();
+		const res = await client.call<ApplyResponse>("POST", `${jobPath(ref)}/apply`, {
+			threeWay: Boolean(values["3way"]),
+			keep: Boolean(values.keep),
+		});
+		if (!res.ok) {
+			out(`error: ${res.error ?? "the patch does not apply"}`);
+			return EXIT_FAILED;
+		}
+		out(`applied ${res.files.length} file(s)`);
+		for (const f of res.files) out(f);
+		return 0;
+	},
+
+	async discard(argv) {
+		const { positionals } = parse(argv, {});
+		const [ref] = positionals;
+		if (!ref) throw new UsageError("discard needs a job id");
+		await (await connect()).call("POST", `${jobPath(ref)}/discard`);
+		out("worktree removed");
+		return 0;
+	},
+
+	async prune(argv) {
+		const { values } = parse(argv, {
+			older: { type: "string" },
+			"dry-run": { type: "boolean" },
+		});
+		const client = await connect();
+		const { removed } = await client.call<{ removed: string[] }>("POST", "/v1/prune", {
+			olderS: pruneSeconds(values.older),
+			dryRun: Boolean(values["dry-run"]),
+		});
+		for (const id of removed) out(id);
 		return 0;
 	},
 

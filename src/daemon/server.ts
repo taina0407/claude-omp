@@ -7,12 +7,17 @@ import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import type { Server } from "bun";
 import type { z } from "zod";
 import {
+	type ApplyResponse,
+	applyBody,
 	type ControlResponse,
 	controlBody,
 	createJobBody,
+	type DiffResponse,
 	type FeedEvent,
 	type Health,
 	type JobView,
+	type PruneResponse,
+	pruneBody,
 	shutdownBody,
 	type WaitResponse,
 } from "../api/schema";
@@ -23,6 +28,7 @@ import { JobRunner } from "../core/runner";
 import { Store } from "../core/store";
 import { isActive, isTerminal, type Job } from "../core/types";
 import { errorText, nowIso, parseDuration, stopOrphanWorker, UsageError } from "../core/util";
+import { applyWorktree, removeWorktree, worktreePatch } from "../isolation/worktree";
 import { VERSION } from "../version";
 import { acquireLock, releaseLock } from "./lock";
 import { log } from "./log";
@@ -243,6 +249,7 @@ export class Daemon {
 		}
 		if (resource === "wait" && method === "GET") return this.#wait(url);
 		if (resource === "feed" && method === "GET") return this.#feed(url);
+		if (resource === "prune" && method === "POST") return this.#prune(await body(req, pruneBody));
 
 		if (resource === "jobs") {
 			if (!ref) {
@@ -262,6 +269,11 @@ export class Daemon {
 			if (ref && action === "control" && method === "POST") {
 				return this.#control(resolveJob(this.store, ref), await body(req, controlBody));
 			}
+			if (ref && action === "diff" && method === "GET") return this.#diff(ref);
+			if (ref && action === "apply" && method === "POST") {
+				return this.#apply(ref, await body(req, applyBody));
+			}
+			if (ref && action === "discard" && method === "POST") return this.#discard(ref);
 			if (ref && action === "resume" && method === "POST") {
 				const job = resolveJob(this.store, ref);
 				if (job.status !== "interrupted") {
@@ -307,6 +319,62 @@ export class Daemon {
 			throw new HttpError(409, `job ${job.id} is ${job.status}, not running`);
 		}
 		const res: ControlResponse = runner.control(b);
+		return json(res);
+	}
+
+	/** A job whose worktree can be inspected: it must have ended and have one. */
+	#worktreeJob(ref: string): Job {
+		const job = resolveJob(this.store, ref);
+		if (isActive(job.status)) throw new HttpError(409, `job ${job.id} is still ${job.status}`);
+		if (!job.worktreePath) throw new HttpError(409, `job ${job.id} has no worktree`);
+		return job;
+	}
+
+	#diff(ref: string): Response {
+		const job = this.#worktreeJob(ref);
+		const res: DiffResponse = worktreePatch(job);
+		return json(res);
+	}
+
+	#apply(ref: string, b: z.infer<typeof applyBody>): Response {
+		const job = this.#worktreeJob(ref);
+		const res: ApplyResponse = applyWorktree(job, { threeWay: b.threeWay === true });
+		if (res.ok && !b.keep) {
+			removeWorktree(job);
+			this.store.updateJob(job.id, { worktreePath: null, branch: null });
+			this.store.appendFeed(
+				job.id,
+				"info",
+				`applied ${res.files.length} file(s); worktree removed`,
+			);
+		}
+		return json(res);
+	}
+
+	#discard(ref: string): Response {
+		const job = this.#worktreeJob(ref);
+		removeWorktree(job);
+		this.store.updateJob(job.id, { worktreePath: null, branch: null });
+		this.store.appendFeed(job.id, "info", "worktree removed");
+		return json({ ok: true });
+	}
+
+	/** Removes worktrees of finished jobs older than `olderS` (default a week). */
+	#prune(b: z.infer<typeof pruneBody>): Response {
+		const cutoff = Date.now() - (b.olderS ?? 7 * 24 * 3600) * 1000;
+		const removed: string[] = [];
+		for (const job of this.store.listJobs({ limit: 10_000 })) {
+			if (isActive(job.status) || !job.worktreePath) continue;
+			// Interrupted jobs never got a finishedAt; measure them from their creation.
+			const done = Date.parse(job.finishedAt ?? job.createdAt);
+			if (!Number.isFinite(done) || done > cutoff) continue;
+			if (!b.dryRun) {
+				removeWorktree(job);
+				this.store.updateJob(job.id, { worktreePath: null, branch: null });
+			}
+			removed.push(job.id);
+		}
+		const res: PruneResponse = { removed };
 		return json(res);
 	}
 

@@ -1,10 +1,20 @@
 /** Creating jobs and finding them by (partial) id. */
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { canIsolate } from "../isolation/worktree";
 import { getPreset, loadConfig, pickSetting, type Settings } from "./config";
+import { gitRoot } from "./git";
 import { jobDir } from "./paths";
 import type { Store } from "./store";
-import { ACCESS_LEVELS, type Access, type Job, type JobSpec } from "./types";
+import {
+	ACCESS_LEVELS,
+	type Access,
+	ISOLATE_MODES,
+	type IsolateMode,
+	type Isolation,
+	type Job,
+	type JobSpec,
+} from "./types";
 import { firstLine, newJobId, parseDuration, shellSplit, UsageError } from "./util";
 
 export interface JobOptions {
@@ -25,6 +35,9 @@ export interface JobOptions {
 	title?: string | undefined;
 	ompArgs?: string | undefined;
 	noPreamble?: boolean | undefined;
+	/** auto (default) | worktree | none; `continue` inherits the parent's instead. */
+	isolate?: string | undefined;
+	carryDirty?: boolean | undefined;
 }
 
 function settingsOf(job: Job): Settings {
@@ -65,6 +78,7 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 	if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
 		throw new UsageError(`cwd does not exist: ${cwd}`);
 	}
+	const isolate = resolveIsolation(pick, opts, parent, cwd, access as Access);
 	const spec: JobSpec = {
 		title: opts.title ?? firstLine(opts.prompt),
 		cwd,
@@ -80,11 +94,50 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 		noPreamble: Boolean(opts.noPreamble),
 		parentId: parent?.id ?? null,
 		resumeSession: parent?.sessionId ?? null,
+		isolate,
+		carryDirty: Boolean(opts.carryDirty),
 	};
 	const id = newJobId();
 	mkdirSync(jobDir(id), { recursive: true });
 	writeFileSync(join(jobDir(id), "prompt.md"), opts.prompt);
-	return store.createJob(id, spec);
+	const job = store.createJob(id, spec);
+	if (!parent) return job;
+	// A continued job keeps working in the parent's worktree, so it sees the parent's changes.
+	store.updateJob(id, {
+		worktreePath: parent.worktreePath,
+		baseRef: parent.baseRef,
+		branch: parent.branch,
+		repoRoot: parent.repoRoot,
+	});
+	return store.getJob(id) as Job;
+}
+
+function resolveIsolation(
+	pick: <K extends keyof Settings>(
+		key: K,
+		flag: Settings[K] | undefined,
+		fallback?: Settings[K],
+	) => Settings[K] | undefined,
+	opts: JobOptions,
+	parent: Job | null,
+	cwd: string,
+	access: Access,
+): Isolation {
+	if (parent) return parent.isolate;
+	const requested = pick("isolate", opts.isolate as IsolateMode | undefined, "auto") ?? "auto";
+	if (!ISOLATE_MODES.includes(requested as IsolateMode)) {
+		throw new UsageError(`isolate must be one of ${ISOLATE_MODES.join(", ")}`);
+	}
+	if (requested === "none") return "none";
+	if (requested === "worktree") {
+		if (!gitRoot(cwd)) throw new UsageError("--isolate worktree needs a git repository");
+		if (!canIsolate(cwd)) {
+			throw new UsageError("--isolate worktree needs a git repository with at least one commit");
+		}
+		return "worktree";
+	}
+	// auto: a full-access run in a repo with a commit gets its own checkout.
+	return access === "full" && canIsolate(cwd) ? "worktree" : "none";
 }
 
 export class NotFoundError extends UsageError {}

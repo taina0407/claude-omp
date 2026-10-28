@@ -17,6 +17,8 @@ const settings = z.looseObject({
 	answer_timeout: duration.optional(),
 	approval_timeout: duration.optional(),
 	omp_args: z.string().optional(),
+	/** auto (default) | worktree | none; see `omp-task run --isolate`. */
+	isolate: z.enum(["auto", "worktree", "none"]).optional(),
 });
 
 export type Settings = z.infer<typeof settings>;

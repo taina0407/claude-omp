@@ -19,6 +19,12 @@ export const ALL_STATUSES: readonly JobStatus[] = [
 export const ACCESS_LEVELS = ["read", "edit", "full"] as const;
 export type Access = (typeof ACCESS_LEVELS)[number];
 
+export const ISOLATE_MODES = ["auto", "worktree", "none"] as const;
+/** How the user asked for isolation; `auto` is resolved when the job is created. */
+export type IsolateMode = (typeof ISOLATE_MODES)[number];
+/** Where a job runs: in the user's checkout, or in a git worktree of it. */
+export type Isolation = "none" | "worktree";
+
 export function isTerminal(status: string): status is TerminalStatus {
 	return (TERMINAL_STATUSES as readonly string[]).includes(status);
 }
@@ -43,6 +49,9 @@ export interface JobSpec {
 	noPreamble: boolean;
 	parentId: string | null;
 	resumeSession: string | null;
+	/** Omitted means `none`; the store fills the column in. */
+	isolate?: Isolation;
+	carryDirty?: boolean;
 }
 
 export interface Job extends JobSpec {
@@ -67,6 +76,14 @@ export interface Job extends JobSpec {
 	/** null when the cwd is not a git repo, so changes cannot be detected. */
 	changedFiles: string[] | null;
 	exitCode: number | null;
+	isolate: Isolation;
+	carryDirty: boolean;
+	/** The job's worktree, once the runner created it; null when it runs in the user's checkout. */
+	worktreePath: string | null;
+	/** The commit the worktree started from; the diff base. */
+	baseRef: string | null;
+	branch: string | null;
+	repoRoot: string | null;
 }
 
 export type PendingKind = "question" | "approval";
