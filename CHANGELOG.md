@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased: v1
+## 1.0.0 (2026-10-28)
+
+A rewrite in TypeScript on Bun around a per-user daemon. Highlights: Claude is woken only when it is needed, git worktree isolation, dependencies, groups and budgets, structured reviews, the `omp` plugin with hooks, and release binaries. Built in milestones:
 
 ### M7: hardening and release
 
