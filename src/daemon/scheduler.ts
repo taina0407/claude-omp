@@ -1,7 +1,8 @@
 /**
  * Decides which waiting jobs move on: a `blocked` job is released (or skipped) once its
  * dependencies end, and a `queued` job starts when the global, group and per-checkout limits
- * leave room, unless its group or the day has already spent its budget.
+ * leave room, unless its group or the day has already spent its budget. An interrupted job keeps
+ * its slot until it is resumed or cancelled, so a daemon restart does not hand it to a queued job.
  */
 import type { Config } from "../core/config";
 import { gitRoot } from "../core/git";
@@ -86,7 +87,11 @@ export function schedule(store: Store, config: Config, running: Job[]): Decision
 		}
 		return root;
 	};
-	const active = [...running];
+	const ids = new Set(running.map((j) => j.id));
+	const interrupted = store
+		.listJobs({ limit: 10_000, status: "interrupted" })
+		.filter((j) => !ids.has(j.id));
+	const active = [...running, ...interrupted];
 	const maxConcurrent = config.max_concurrent ?? DEFAULT_MAX_CONCURRENT;
 	const maxWriters = config.max_writers_per_repo ?? DEFAULT_MAX_WRITERS_PER_REPO;
 

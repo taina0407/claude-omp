@@ -357,7 +357,8 @@ biệt thay vì thay thế nó theo chuỗi ưu tiên trên.
 
 `max_concurrent` mặc định là 4. `max_writers_per_repo` mặc định là 1 cho các job chỉnh sửa
 trực tiếp cùng một bản checkout; các job ghi trong worktree tách biệt không dùng chung
-suất ghi đó. Nhóm hỗ trợ `max_concurrent` và `budget_usd`; `budget`/`--budget` cho từng job
+suất ghi đó. Job bị gián đoạn (`interrupted`) vẫn giữ suất của nó cho đến khi được `resume`
+hoặc `cancel`, nên khởi động lại daemon không để job đang xếp hàng chạy thế chỗ. Nhóm hỗ trợ `max_concurrent` và `budget_usd`; `budget`/`--budget` cho từng job
 và `daily_budget_usd` cũng giới hạn chi tiêu. Job vượt ngân sách dừng với trạng thái
 `over_budget`; ngân sách không phải mức trần cứng được trả trước.
 

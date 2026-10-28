@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.2 (2026-10-29)
+
+- An interrupted job keeps its concurrency and writer slot until it is resumed or cancelled.
+  Before, restarting the daemon let a queued job take the slot, and `resume` then ran both, so
+  two jobs could edit one checkout at once.
+
 ## 1.1.1 (2026-10-29)
 
 - Approval rules split a command list joined with `&&`, `||` or `;` (outside quotes) and

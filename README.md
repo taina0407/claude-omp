@@ -336,7 +336,9 @@ than replacing it through that precedence chain.
 ### Concurrency, spending, and lifecycle
 
 `max_concurrent` defaults to 4. `max_writers_per_repo` defaults to 1 for jobs editing the same
-checkout directly; isolated writers do not share that writer slot. Groups support
+checkout directly; isolated writers do not share that writer slot. An interrupted job keeps
+its slot until you `resume` or `cancel` it, so a daemon restart does not let a queued job start
+in its place. Groups support
 `max_concurrent` and `budget_usd`; per-job `budget`/`--budget` and `daily_budget_usd` also limit
 spending. Jobs exceeding a budget stop as `over_budget`; budgets are not prepaid hard caps.
 

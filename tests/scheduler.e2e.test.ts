@@ -49,6 +49,29 @@ describe("concurrency", () => {
 		await sb.cli(["cancel", reader]);
 	});
 
+	test("an interrupted writer keeps its turn across a daemon restart until it is resumed", async () => {
+		const a = await sb.start(["SLEEP"]);
+		await sb.waitForStatus(a, "running");
+		const b = await sb.start(["WRITE b.txt"]);
+		await sb.cli(["daemon", "stop", "--force"]);
+		expect(sb.jobStatus(a)).toBe("interrupted");
+		await sb.cli(["list"]); // starts a fresh daemon, which must not hand a's turn to b
+		await Bun.sleep(300);
+		expect(sb.jobStatus(b)).toBe("queued");
+		await sb.cli(["resume", a, "--detach"]);
+		expect((await sb.waitJson(b)).status).toBe("completed");
+		expect((sb.job(b)?.startedAt as string) >= (sb.job(a)?.finishedAt as string)).toBe(true);
+	});
+
+	test("cancelling an interrupted writer frees its turn", async () => {
+		const a = await sb.start(["SLEEP"]);
+		await sb.waitForStatus(a, "running");
+		const b = await sb.start(["WRITE b.txt"]);
+		await sb.cli(["daemon", "stop", "--force"]);
+		await sb.cli(["cancel", a]);
+		expect((await sb.waitJson(b)).status).toBe("completed");
+	});
+
 	test("a group's max_concurrent from the config applies", async () => {
 		sb.writeConfig({ groups: { g: { max_concurrent: 1 } } });
 		const a = await sb.start(["--access", "read", "-g", "g", "SLEEP"]);
