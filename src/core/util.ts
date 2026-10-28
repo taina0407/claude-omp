@@ -29,7 +29,7 @@ export function isoAt(date: Date): string {
 	return date.toISOString().replace(/\.\d{3}Z$/, "+00:00");
 }
 
-/** Job ids sort by creation time: YYYYMMDD-HHMMSS-xxxx (local time), like v0.2. */
+/** Job ids sort by creation time: YYYYMMDD-HHMMSS-xxxx (local time). */
 export function newJobId(now = new Date()): string {
 	const p = (n: number) => String(n).padStart(2, "0");
 	const stamp = `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;

@@ -1,6 +1,6 @@
 /**
  * User config (`~/.config/claude-omp/config.json`): a `defaults` block applied to every run and
- * named `presets`. Same file format as v0.2.
+ * named `presets`.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";

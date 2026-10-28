@@ -67,12 +67,17 @@ export function createWorktree(job: Job): Worktree {
 	mkdirSync(dirname(path), { recursive: true });
 	const add = git(["worktree", "add", "-b", branch, path, baseRef], repoRoot);
 	if (!add.ok) throw new Error(`git worktree add failed: ${add.err.trim()}`);
-	if (job.carryDirty) carryDirty(repoRoot, path);
-	return { path, branch, baseRef, repoRoot, cwd: sameSpot(repoRoot, path, job.cwd) };
+	// The patch is taken against the base, so carried changes become the base: a commit on the
+	// job's branch. Otherwise `diff`/`apply` would hand the user's own changes back to them.
+	const base = job.carryDirty ? (carryDirty(repoRoot, path) ?? baseRef) : baseRef;
+	return { path, branch, baseRef: base, repoRoot, cwd: sameSpot(repoRoot, path, job.cwd) };
 }
 
-/** Brings the main checkout's uncommitted changes into the worktree: tracked and untracked. */
-function carryDirty(repoRoot: string, path: string): void {
+/**
+ * Brings the main checkout's uncommitted changes into the worktree (tracked and untracked) and
+ * commits them there. Returns that commit, or null when there was nothing to carry.
+ */
+function carryDirty(repoRoot: string, path: string): string | null {
 	const diff = git(["diff", "--binary", "HEAD"], repoRoot);
 	if (!diff.ok) throw new Error(`git diff failed: ${diff.err.trim()}`);
 	if (diff.out.length) {
@@ -86,6 +91,27 @@ function carryDirty(repoRoot: string, path: string): void {
 		mkdirSync(dirname(dest), { recursive: true });
 		cpSync(join(repoRoot, rel), dest);
 	}
+	const staged = git(["add", "-A"], path);
+	if (!staged.ok) throw new Error(`git add failed: ${staged.err.trim()}`);
+	if (git(["diff", "--cached", "--quiet"], path).ok) return null;
+	const commit = git(
+		[
+			"-c",
+			"user.name=omp-task",
+			"-c",
+			"user.email=omp-task@localhost",
+			"-c",
+			"commit.gpgsign=false",
+			"commit",
+			"-q",
+			"--no-verify",
+			"-m",
+			"omp-task: uncommitted changes carried from the checkout",
+		],
+		path,
+	);
+	if (!commit.ok) throw new Error(`git commit failed: ${commit.err.trim()}`);
+	return head(path);
 }
 
 /** Stages everything in the worktree and returns its diff against the base commit. */

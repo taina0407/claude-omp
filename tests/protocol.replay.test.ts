@@ -31,7 +31,7 @@ function replay(name: string) {
 
 describe("handshake", () => {
 	test("negotiates v2, registers host tools, subscribes to subagent progress, then prompts", () => {
-		const { sent, protocol } = replay("v2-host-tools");
+		const { sent } = replay("v2-host-tools");
 		expect(sent.slice(0, 5).map((f) => f.type)).toEqual([
 			"negotiate_protocol",
 			"set_host_tools",
@@ -41,7 +41,28 @@ describe("handshake", () => {
 		]);
 		expect(sent[0]?.protocolVersion).toBe(2);
 		expect(sent[4]?.message).toBe("replayed prompt");
-		expect(protocol.protocolVersion).toBe(2);
+	});
+
+	test("an omp without protocol v2 fails the job instead of prompting", () => {
+		const events: BackendEvent[] = [];
+		const sent: Frame[] = [];
+		const protocol = new OmpRpcProtocol({
+			prompt: "p",
+			send: (f) => sent.push(f),
+			emit: (e) => events.push(e),
+		});
+		protocol.onFrame({ type: "ready", protocolVersion: 1 });
+		protocol.onFrame({
+			id: sent[0]?.id,
+			type: "response",
+			command: "negotiate_protocol",
+			success: false,
+			error: "unknown command",
+		});
+		expect(sent.map((f) => f.type)).toEqual(["negotiate_protocol"]);
+		const end = events.find((e) => e.kind === "end");
+		expect(end).toMatchObject({ outcome: "failed" });
+		expect(JSON.stringify(end)).toContain("update omp");
 	});
 
 	test("reports the session id and resolved model", () => {

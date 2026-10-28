@@ -66,7 +66,7 @@ describe.skipIf(!enabled)(`real omp (${model})`, () => {
 				"read",
 				"Use the ask_orchestrator tool to ask which color to use, offering red and blue. Then reply with only the color you were told.",
 			],
-			[4],
+			[0],
 		);
 		expect(asked.stdout).toContain("QUESTION from worker");
 		const id = idOf(asked.stdout);
@@ -77,7 +77,7 @@ describe.skipIf(!enabled)(`real omp (${model})`, () => {
 	test("a shell approval wakes the orchestrator; an allow rule does not", async () => {
 		const prompt =
 			"Run the shell command `ls` once in the current directory, then reply with the number of entries it printed.";
-		const asked = await run(["-a", "edit", prompt], [4]);
+		const asked = await run(["-a", "edit", prompt], [0]);
 		expect(asked.stdout).toContain("APPROVAL needed");
 		const id = idOf(asked.stdout);
 		await sb.cli(["approve", id]);
@@ -97,7 +97,7 @@ describe.skipIf(!enabled)(`real omp (${model})`, () => {
 			"read",
 			"First call notify_orchestrator with message 'plan ready' and checkpoint set to true. Then read notes.txt and reply with its first line.",
 		]);
-		const woke = await sb.cli(["wait", id], [4]);
+		const woke = await sb.cli(["wait", id], [0]);
 		expect(woke.stdout).toContain("CHECKPOINT: plan ready");
 		expect((await sb.cli(["wait", id])).stdout).toContain("WAKE: done");
 	});

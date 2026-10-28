@@ -637,7 +637,11 @@ export class JobRunner {
 		const job = this.#job;
 		const after = this.#gitBefore ? snapshot(this.#workCwd) : null;
 		this.#errors.push(...errors);
-		const changed = withoutDir(changedFiles(this.#gitBefore, after), this.#workCwd, stateDir());
+		// A read-access worker has no tool that writes, so whatever changed was someone else's edit.
+		const changed =
+			job.access === "read"
+				? []
+				: withoutDir(changedFiles(this.#gitBefore, after), this.#workCwd, stateDir());
 		if (job.review) {
 			if (this.#review) {
 				this.#finalText = renderReview(this.#review, job.review.target);

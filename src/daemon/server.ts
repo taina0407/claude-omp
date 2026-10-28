@@ -30,7 +30,6 @@ import {
 } from "../api/schema";
 import { type Config, loadConfig } from "../core/config";
 import { createJob, NotFoundError, resolveJob } from "../core/jobs";
-import { importLegacyJobs } from "../core/legacy";
 import { socketPath } from "../core/paths";
 import { orderPlan } from "../core/plan";
 import { JobRunner } from "../core/runner";
@@ -165,11 +164,9 @@ export class Daemon {
 		return this.#stopping;
 	}
 
-	/** Imports omp-task 0.2 jobs and deletes finished jobs past `job_retention`. */
+	/** Deletes finished jobs past `job_retention`. */
 	#housekeep(): void {
 		try {
-			const imported = importLegacyJobs(this.store);
-			if (imported.length) log("info", "imported omp-task 0.2 jobs", { count: imported.length });
 			const raw = safeConfig().job_retention;
 			const retention = raw === undefined ? DEFAULT_RETENTION_S : parseDuration(raw);
 			if (retention) {
@@ -615,6 +612,8 @@ export class Daemon {
 		const ids = (url.searchParams.get("ids") ?? "").split(",").filter(Boolean);
 		if (!ids.length) throw new HttpError(400, "ids is required");
 		const fromStart = url.searchParams.get("from") === "start";
+		// follow=0: send what is there now, then end, even while the jobs still run.
+		const follow = url.searchParams.get("follow") !== "0";
 		const jobIds = ids.map((r) => resolveJob(this.store, r).id);
 		const seq = new Map(jobIds.map((id) => [id, fromStart ? 0 : this.store.lastFeedSeq(id)]));
 		const encoder = new TextEncoder();
@@ -659,7 +658,7 @@ export class Daemon {
 						const drained = jobIds.every(
 							(id) => (seq.get(id) ?? 0) >= daemon.store.lastFeedSeq(id),
 						);
-						if (ended && drained) {
+						if ((ended || !follow) && drained) {
 							send({ type: "end", jobs: jobs.map((j) => ({ id: j.id, status: j.status })) });
 							break;
 						}

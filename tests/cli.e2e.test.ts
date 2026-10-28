@@ -1,7 +1,6 @@
 /**
- * End-to-end tests for the v1 CLI against the fake omp (tests/fake-omp). Ported from the v0.2
- * suite (tests/test_omp_task.py) plus cases for what the M0 recordings showed. Every test gets
- * its own state dir and so its own daemon.
+ * End-to-end tests for the CLI against the fake omp (tests/fake-omp), including cases for what
+ * the M0 recordings showed. Every test gets its own state dir and so its own daemon.
  */
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { writeFileSync } from "node:fs";
@@ -32,6 +31,11 @@ const ompArgv = (): string[] => sb.ompArgv();
 const waitForStatus = (job: string, status: string) => sb.waitForStatus(job, status);
 
 describe("basics", () => {
+	test("a read-access job reports no changed files, whoever edited the checkout", async () => {
+		const out = await runJson(["--access", "read", "WRITE new.txt please"]);
+		expect(out.changed_files).toEqual([]);
+	});
+
 	test("run reports result and changed files", async () => {
 		const out = await runJson(["WRITE new.txt please"]);
 		expect(out.status).toBe("completed");
@@ -103,6 +107,23 @@ describe("basics", () => {
 		expect(second.result).toContain("resumed=true");
 	});
 
+	test("continue keeps a disabled timeout, extra dirs and raw omp flags", async () => {
+		const first = await runJson([
+			"--timeout",
+			"0",
+			"--add-dir",
+			"..",
+			"--omp-args=--no-skills",
+			"hello",
+		]);
+		const second = JSON.parse((await cli(["continue", first.id, "--json", "again"])).stdout);
+		const job = sb.job(second.id as string);
+		expect(job?.timeoutS).toBeNull();
+		const argv = ompArgv();
+		expect(argv).toContain("--add-dir");
+		expect(argv).toContain("--no-skills");
+	});
+
 	test("subagent cost is added to the job's cost", async () => {
 		const out = await runJson(["SUBAGENT"]);
 		expect(out.cost_usd).toBe(0.003);
@@ -110,8 +131,8 @@ describe("basics", () => {
 });
 
 describe("live supervision", () => {
-	test("a question returns attention (exit 4), then reply resumes the job", async () => {
-		const proc = await cli(["run", "ASK then finish"], [4]);
+	test("a question returns attention (exit 0, WAKE: question), then reply resumes the job", async () => {
+		const proc = await cli(["run", "ASK then finish"], [0]);
 		expect(proc.stdout).toContain("QUESTION from worker");
 		expect(proc.stdout).toContain("option: red");
 		const job = proc.stdout.split(/\s+/)[3] as string;
@@ -122,7 +143,7 @@ describe("live supervision", () => {
 	});
 
 	test("approval flow", async () => {
-		const proc = await cli(["run", "BASH"], [4]);
+		const proc = await cli(["run", "BASH"], [0]);
 		expect(proc.stdout).toContain("APPROVAL needed");
 		expect(proc.stdout).toContain("make test");
 		const job = proc.stdout.split(/\s+/)[3] as string;
@@ -185,7 +206,7 @@ describe("live supervision", () => {
 describe("feed", () => {
 	test("watch streams the feed and exits", async () => {
 		const job = await start(["NOTIFY WRITE w.txt"]);
-		const { stdout } = await cli(["watch", job, "--from-start", "--verbose", "--interval", "0.1"]);
+		const { stdout } = await cli(["watch", job, "--from-start", "--verbose"]);
 		const kinds = stdout
 			.trim()
 			.split("\n")
@@ -199,7 +220,7 @@ describe("feed", () => {
 
 	test("watch --quiet hides progress", async () => {
 		const job = await start(["NOTIFY WRITE w.txt"]);
-		const { stdout } = await cli(["watch", job, "--from-start", "-q", "--interval", "0.1"]);
+		const { stdout } = await cli(["watch", job, "--from-start", "-q"]);
 		expect(stdout).not.toContain("PROGRESS");
 		expect(stdout).toContain("DONE");
 	});
@@ -209,7 +230,7 @@ describe("housekeeping", () => {
 	test("list and doctor", async () => {
 		const first = await runJson(["hello"]);
 		expect((await cli(["list"])).stdout).toContain(first.id);
-		expect((await cli(["doctor"])).stdout).toContain("omp/0.0.0-fake");
+		expect((await cli(["doctor"])).stdout).toContain("omp/18.12.6-fake");
 	});
 
 	test("job ids resolve by unique prefix or suffix", async () => {

@@ -12,6 +12,12 @@ module, links between files, gotchas found so far. Point at files instead of pas
 - May read: anything
 - Must not touch: `path/three/`, generated files, lockfiles
 
+## Allowed commands
+The shell commands the worker may run, e.g. `bun test path/to/spec`, `bun run typecheck`. Start
+the job with a matching `--allow` for each (`--allow 'bun test*' --allow 'bun run typecheck'`),
+so they never wake you. Anything else asks for approval; for a docs or research task, say
+"none: verify with the read/search tools".
+
 ## Requirements
 1. ...
 2. ...

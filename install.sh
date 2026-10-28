@@ -8,7 +8,6 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN=omp
-OLD_PLUGIN=omp-delegate
 MARKETPLACE=omp-tools
 BIN_DIR="${OMP_TASK_BIN_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-omp"
@@ -39,10 +38,6 @@ seed_config() {
 install_plugin() {
   command -v claude >/dev/null || { echo "claude CLI not found" >&2; exit 1; }
   claude plugin marketplace add "$REPO" --scope user || claude plugin marketplace update "$MARKETPLACE"
-  if claude plugin list 2>/dev/null | grep -q "$OLD_PLUGIN@$MARKETPLACE"; then
-    claude plugin uninstall "$OLD_PLUGIN@$MARKETPLACE" --scope user || true
-    say "removed the old $OLD_PLUGIN plugin (renamed to $PLUGIN in v1)"
-  fi
   claude plugin install "$PLUGIN@$MARKETPLACE" --scope user || claude plugin update "$PLUGIN@$MARKETPLACE"
   say "installed $PLUGIN@$MARKETPLACE — run /reload-plugins in open sessions"
 }

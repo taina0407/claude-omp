@@ -1,4 +1,4 @@
-/** Text and JSON output. Formats and JSON keys match v0.2 so existing skills keep working. */
+/** Text and JSON output of the CLI. */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { jobDir } from "../core/paths";
@@ -103,6 +103,15 @@ export function printPending(jobId: string, pending: Pending[]): void {
 	}
 }
 
+/** One line per pending item, repeated next to `WAKE:` so a long approval does not bury it. */
+export function pendingSummary(p: Pending): string {
+	const [first = "", ...rest] = p.text.trim().split("\n");
+	const head = first.length > 80 ? `${first.slice(0, 79)}…` : first;
+	const more = rest.length ? ` (+${rest.length} lines)` : "";
+	const what = p.kind === "approval" ? `approval ${p.tool}: ${head}` : `question: ${head}`;
+	return `PENDING: ${p.jobId} ${what}${more} (ref ${p.ref})`;
+}
+
 const counts = (m: Record<string, number>) =>
 	Object.entries(m)
 		.sort(([a], [b]) => a.localeCompare(b))
@@ -112,12 +121,12 @@ const counts = (m: Record<string, number>) =>
 function printNotices(jobId: string, notices: Notice[]): void {
 	for (const n of notices) out(`${n.kind.toUpperCase()}: ${n.text}`);
 	if (notices.some((n) => n.kind === "stalled")) {
-		out(`  look:   omp-task watch ${jobId} --from-start --verbose | tail -40`);
+		out(`  look:   omp-task watch ${jobId} --verbose --last 40`);
 		out(`  act:    omp-task steer ${jobId} "<new direction>"   or   omp-task cancel ${jobId}`);
 	} else {
 		out(`  look:   omp-task status ${jobId}   redirect: omp-task steer ${jobId} "..."`);
 	}
-	out(`  then:   omp-task wait ${jobId}   (in the background)`);
+	out("  then:   re-run the same `omp-task wait` (same ids or --group) in the background");
 }
 
 export function emitJob(
@@ -134,6 +143,7 @@ export function emitJob(
 	out(`## omp job ${job.id} — ${job.status.toUpperCase()}`);
 	out(`- title: ${job.title}`);
 	out(`- cwd: ${job.cwd}  access: ${job.access}`);
+	out(`- files: ${jobDir(job.id)} (prompt, events.jsonl, result)`);
 	if (job.worktreePath) {
 		out(`- worktree: ${job.worktreePath} (branch ${job.branch ?? "-"})`);
 	}
@@ -161,7 +171,9 @@ export function emitJob(
 	if (job.status === "interrupted") {
 		out();
 		out(`INTERRUPTED: the omp-task daemon stopped while this job ran.`);
-		out(`  continue it: omp-task resume ${job.id}    or give up: omp-task cancel ${job.id}`);
+		out(
+			`  continue it: omp-task resume ${job.id} --detach    or give up: omp-task cancel ${job.id}`,
+		);
 		return;
 	}
 	if (pending.length || opts.notices?.length) {

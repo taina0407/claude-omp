@@ -61,10 +61,7 @@ interface ApprovalRequest {
 
 export class OmpRpcProtocol {
 	phase: Phase = "connecting";
-	protocolVersion: 1 | 2 = 1;
 	sessionId: string | null = null;
-	/** Set once omp reported the end of the agent run; `prompt_result` normally follows. */
-	agentEnded = false;
 	readonly #opts: ProtocolOptions;
 	readonly #approvals = new Map<string, ApprovalRequest>();
 	#nextId = 0;
@@ -121,9 +118,6 @@ export class OmpRpcProtocol {
 			case "subagent_progress":
 				this.#onSubagent(f);
 				return;
-			case "agent_end":
-				if (f.isTerminal !== false && f.willContinue !== true) this.agentEnded = true;
-				return;
 			case "prompt_result":
 				if (this.#promptId === null) return;
 				this.#end(
@@ -144,9 +138,8 @@ export class OmpRpcProtocol {
 	#onResponse(f: Frame): void {
 		const command = str(f.command);
 		if (command === "negotiate_protocol") {
-			if (f.success === true) this.protocolVersion = 2;
-			else this.#opts.emit({ kind: "warning", text: `protocol v2 unavailable: ${str(f.error)}` });
-			this.#sendSetupAndPrompt();
+			if (f.success === true) this.#sendSetupAndPrompt();
+			else this.#end("failed", `omp does not speak RPC protocol v2 (${str(f.error)}); update omp`);
 			return;
 		}
 		if (command === "get_state" && f.success === true && isRecord(f.data)) {
@@ -301,11 +294,6 @@ export class OmpRpcProtocol {
 					? (options.find((o) => lower(o).includes("session")) ?? "Approve")
 					: (options.find((o) => lower(o) === "approve") ?? options[0] ?? "Approve");
 		this.#opts.send({ type: "extension_ui_response", id: ref, value });
-	}
-
-	/** omp finished the agent run but never sent `prompt_result` (older omp): end anyway. */
-	endWithoutPromptResult(): void {
-		this.#end("completed");
 	}
 
 	/** The process is gone. Reports a failure unless the session already ended. */

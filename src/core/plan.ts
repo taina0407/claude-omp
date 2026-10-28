@@ -23,7 +23,7 @@ import { UsageError } from "./util";
 
 const stringList = z.union([z.string(), z.array(z.string())]);
 
-const taskFields = z.object({
+const taskFields = z.strictObject({
 	model: z.string().optional(),
 	preset: z.string().optional(),
 	access: z.string().optional(),

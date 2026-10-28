@@ -10,8 +10,6 @@ import { OmpRpcProtocol } from "./protocol";
 
 /** omp can take a while before it acknowledges a prompt (25s per turn where D-Bus is missing). */
 const STARTUP_TIMEOUT_MS = 120_000;
-/** How long to wait for `prompt_result` after a terminal `agent_end` before ending anyway. */
-const PROMPT_RESULT_GRACE_MS = 3_000;
 /** How long `close()` waits for omp to exit after stdin is closed, before signalling it. */
 const EXIT_GRACE_MS = 5_000;
 
@@ -99,13 +97,7 @@ class OmpRpcSession implements BackendSession {
 		const handle = (frames: Frame[]) => {
 			for (const frame of frames) {
 				appendFileSync(this.#rawLogPath, encodeFrame(frame));
-				const wasEnded = this.#protocol.agentEnded;
 				this.#protocol.onFrame(frame);
-				if (!wasEnded && this.#protocol.agentEnded) {
-					this.#timers.push(
-						setTimeout(() => this.#protocol.endWithoutPromptResult(), PROMPT_RESULT_GRACE_MS),
-					);
-				}
 			}
 		};
 		try {

@@ -99,6 +99,12 @@ describe("worktree isolation", () => {
 		expect(readFileSync(join(worktree, "dirty.txt"), "utf8")).toBe("dirty\n");
 		expect(readFileSync(join(worktree, "existing.txt"), "utf8")).toBe("dirty tracked\n");
 		expect(out.changed_files).toEqual([]);
+		// Only the worker's own changes come back: the carried ones are already in the checkout.
+		writeFileSync(join(worktree, "worker.txt"), "worker\n");
+		expect((await sb.cli(["diff", out.id, "--stat"])).stdout.trim()).toBe("worker.txt");
+		await sb.cli(["apply", out.id]);
+		expect(readFileSync(join(sb.repo, "worker.txt"), "utf8")).toBe("worker\n");
+		expect(readFileSync(join(sb.repo, "existing.txt"), "utf8")).toBe("dirty tracked\n");
 	});
 
 	test("--isolate worktree in a non-git directory is a usage error", async () => {

@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.1.0 (2026-10-29)
+
+Drops compatibility with omp-task 0.2 and with earlier builds, and changes some CLI behaviour
+(the `wait` exit code, removed flags, a job database reset): read the first items before
+upgrading scripts.
+
+- `wait` (and `run`/`continue`/`review` without `--detach`) exits 0 when a job needs you, not
+  4: read the last line, `WAKE: <job> <reason>` or `WAKE: done (...)`. A background wait no
+  longer shows as failed in Claude Code.
+- A wake prints a one-line `PENDING:` summary per open question or approval just above `WAKE:`,
+  so a long approval (an `eval` script) does not bury what is needed.
+- `status --group G` is the same as `summary G`.
+- `watch --last N` prints a job's last N events and exits, also while it runs; the stalled-job
+  hint uses it instead of a `watch | tail` that waited for the job to end.
+- `--carry-dirty`: the carried changes are committed on the job's branch as its base, so
+  `diff`, `apply` and `review --job` show only the worker's changes (before, `apply` failed
+  because the patch also contained the user's own uncommitted changes).
+- `continue` keeps a disabled timeout (`--timeout 0`), `--add-dir` and `--omp-args` of its
+  parent.
+- A read-access job reports no changed files (anything that changed was someone else's edit).
+- Plan files reject unknown keys in `defaults` and tasks instead of ignoring them.
+- Job blocks show the job's files directory; `PENDING:` lines carry the ref; the wake hints
+  say `resume --detach` and "re-run the same wait"; `--help` lists the flags it was missing.
+- omp 18.12 or later is required: a worker that cannot negotiate RPC protocol v2 fails at once
+  with "update omp", the grace timer for an omp that never sends `prompt_result` is gone, and
+  `doctor` flags an older omp.
+- The job database has a single v1 layout. A database from an earlier build is reset on the
+  daemon's first start (job records are dropped; job files and worktrees stay on disk).
+- Removed: importing omp-task 0.2 jobs, the `--interval` flag of `wait`/`watch`, and the
+  installer's removal of the old `omp-delegate` plugin.
+- Fewer approval wake-ups: the brief template has an "Allowed commands" section, the skill asks
+  for a matching `--allow`, and the worker preamble prefers read/search tools for checks the
+  brief does not list.
+- Skill and docs: `approve --session` allows only that tool for the rest of the job;
+  `tool:<name>` allow rules skip the chaining check; `--isolate auto` needs a git repository
+  with a commit; plan files and `--3way` are described precisely. The README is rewritten, with
+  a Vietnamese translation (`README.vi.md`).
+
 ## 1.0.0 (2026-10-28)
 
 A rewrite in TypeScript on Bun around a per-user daemon. Highlights: Claude is woken only when it is needed, git worktree isolation, dependencies, groups and budgets, structured reviews, the `omp` plugin with hooks, and release binaries. Built in milestones:

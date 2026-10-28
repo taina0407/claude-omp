@@ -7,8 +7,11 @@ import { dbFile } from "./paths";
 import type { FeedEntry, Job, JobSpec, JobStatus, Notice, Pending } from "./types";
 import { nowIso } from "./util";
 
-const MIGRATIONS: string[] = [
-	`CREATE TABLE jobs (
+/** Bump when the layout changes; a database with another (or no) version is reset. */
+const SCHEMA_VERSION = "omp-task/1";
+
+const SCHEMA = `
+	CREATE TABLE jobs (
 		id TEXT PRIMARY KEY,
 		parent_id TEXT,
 		title TEXT NOT NULL,
@@ -20,11 +23,26 @@ const MIGRATIONS: string[] = [
 		timeout_s REAL,
 		answer_timeout_s REAL,
 		approval_timeout_s REAL,
+		stall_timeout_s REAL,
 		add_dirs TEXT NOT NULL DEFAULT '[]',
 		files TEXT NOT NULL DEFAULT '[]',
 		extra_args TEXT NOT NULL DEFAULT '[]',
 		no_preamble INTEGER NOT NULL DEFAULT 0,
 		resume_session TEXT,
+		isolate TEXT NOT NULL DEFAULT 'none',
+		carry_dirty INTEGER NOT NULL DEFAULT 0,
+		worktree_path TEXT,
+		base_ref TEXT,
+		branch TEXT,
+		repo_root TEXT,
+		after TEXT NOT NULL DEFAULT '[]',
+		after_any INTEGER NOT NULL DEFAULT 0,
+		group_name TEXT,
+		budget_usd REAL,
+		allow TEXT NOT NULL DEFAULT '[]',
+		deny TEXT NOT NULL DEFAULT '[]',
+		review TEXT,
+		claude_session TEXT,
 		created_at TEXT NOT NULL,
 		started_at TEXT,
 		finished_at TEXT,
@@ -41,10 +59,13 @@ const MIGRATIONS: string[] = [
 		tool_errors TEXT NOT NULL DEFAULT '{}',
 		denied_tools TEXT NOT NULL DEFAULT '[]',
 		errors TEXT NOT NULL DEFAULT '[]',
+		notices TEXT NOT NULL DEFAULT '[]',
 		changed_files TEXT,
 		exit_code INTEGER
 	);
 	CREATE INDEX jobs_cwd ON jobs(cwd);
+	CREATE INDEX jobs_group ON jobs(group_name);
+	CREATE INDEX jobs_claude_session ON jobs(claude_session);
 	CREATE TABLE pending (
 		job_id TEXT NOT NULL,
 		ref TEXT NOT NULL,
@@ -65,46 +86,14 @@ const MIGRATIONS: string[] = [
 		data TEXT NOT NULL DEFAULT '{}',
 		PRIMARY KEY (job_id, seq)
 	);
-	CREATE TABLE commands (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		job_id TEXT NOT NULL,
-		kind TEXT NOT NULL,
-		payload TEXT NOT NULL DEFAULT '{}',
-		created_at TEXT NOT NULL,
-		handled_at TEXT,
-		result TEXT
-	);
-	CREATE INDEX commands_open ON commands(job_id, handled_at);`,
-	// v1 M2: the daemon hands control commands to runners directly.
-	`DROP TABLE commands;`,
-	// v1 M3: jobs can run in a git worktree of the user's checkout.
-	`ALTER TABLE jobs ADD COLUMN isolate TEXT NOT NULL DEFAULT 'none';
-	ALTER TABLE jobs ADD COLUMN carry_dirty INTEGER NOT NULL DEFAULT 0;
-	ALTER TABLE jobs ADD COLUMN worktree_path TEXT;
-	ALTER TABLE jobs ADD COLUMN base_ref TEXT;
-	ALTER TABLE jobs ADD COLUMN branch TEXT;
-	ALTER TABLE jobs ADD COLUMN repo_root TEXT;`,
-	// v1 M4: dependencies, groups, budgets, approval rules and notices.
-	`ALTER TABLE jobs ADD COLUMN after TEXT NOT NULL DEFAULT '[]';
-	ALTER TABLE jobs ADD COLUMN after_any INTEGER NOT NULL DEFAULT 0;
-	ALTER TABLE jobs ADD COLUMN group_name TEXT;
-	ALTER TABLE jobs ADD COLUMN budget_usd REAL;
-	ALTER TABLE jobs ADD COLUMN allow TEXT NOT NULL DEFAULT '[]';
-	ALTER TABLE jobs ADD COLUMN deny TEXT NOT NULL DEFAULT '[]';
-	ALTER TABLE jobs ADD COLUMN stall_timeout_s REAL;
-	ALTER TABLE jobs ADD COLUMN notices TEXT NOT NULL DEFAULT '[]';
-	CREATE INDEX jobs_group ON jobs(group_name);
 	CREATE TABLE groups (
 		name TEXT PRIMARY KEY,
 		max_concurrent INTEGER,
 		budget_usd REAL
-	);`,
-	// v1 M5: review jobs.
-	`ALTER TABLE jobs ADD COLUMN review TEXT;`,
-	// v1 M6: the Claude Code session that started the job (from the SessionStart hook).
-	`ALTER TABLE jobs ADD COLUMN claude_session TEXT;
-	CREATE INDEX jobs_claude_session ON jobs(claude_session);`,
-];
+	);`;
+
+/** Every table a database of this or an earlier layout may have; dropped on a reset. */
+const TABLES = ["jobs", "pending", "feed", "groups", "commands"];
 
 type Row = Record<string, unknown>;
 
@@ -179,21 +168,16 @@ export class Store {
 
 	private migrate(): void {
 		this.db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-		const row = this.db.query("SELECT value FROM meta WHERE key = 'schema_version'").get() as {
+		const row = this.db.query("SELECT value FROM meta WHERE key = 'schema'").get() as {
 			value: string;
 		} | null;
-		let version = row ? Number(row.value) : 0;
-		while (version < MIGRATIONS.length) {
-			const sql = MIGRATIONS[version] as string;
-			this.db.transaction(() => {
-				this.db.run(sql);
-				this.db.run(
-					"INSERT INTO meta (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-					[String(version + 1)],
-				);
-			})();
-			version++;
-		}
+		if (row?.value === SCHEMA_VERSION) return;
+		this.db.transaction(() => {
+			for (const table of TABLES) this.db.run(`DROP TABLE IF EXISTS ${table}`);
+			this.db.run(SCHEMA);
+			this.db.run("DELETE FROM meta");
+			this.db.run("INSERT INTO meta (key, value) VALUES ('schema', ?)", [SCHEMA_VERSION]);
+		})();
 	}
 
 	// ---------------------------------------------------------------- jobs
@@ -248,7 +232,7 @@ export class Store {
 		return row ? fromRow<Job>(row) : null;
 	}
 
-	/** Exact id, or a unique prefix/suffix of one (v0.2 behaviour). */
+	/** Exact id, or a unique prefix/suffix of one. */
 	findJobIds(idPart: string): string[] {
 		const exact = this.db.query("SELECT id FROM jobs WHERE id = ?").get(idPart) as Row | null;
 		if (exact) return [String(exact.id)];

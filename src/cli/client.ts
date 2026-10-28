@@ -50,9 +50,16 @@ export class Client {
 		}
 	}
 
-	/** Streams GET /v1/feed (server-sent events) until the daemon sends `end`. */
-	async *feed(ids: string[], fromStart: boolean): AsyncGenerator<FeedEvent> {
-		const q = new URLSearchParams({ ids: ids.join(","), from: fromStart ? "start" : "latest" });
+	/**
+	 * Streams GET /v1/feed (server-sent events) until the daemon sends `end`: once the jobs ended,
+	 * or right after the events so far when `follow` is false.
+	 */
+	async *feed(ids: string[], fromStart: boolean, follow = true): AsyncGenerator<FeedEvent> {
+		const q = new URLSearchParams({
+			ids: ids.join(","),
+			from: fromStart ? "start" : "latest",
+			follow: follow ? "1" : "0",
+		});
 		const res = await this.#fetch("GET", `/v1/feed?${q}`);
 		if (!res.ok || !res.body) {
 			const data = (await res.json().catch(() => ({}))) as { error?: string };

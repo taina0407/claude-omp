@@ -64,10 +64,11 @@ function settingsOf(job: Job): Settings {
 	const s: Settings = { access: job.access };
 	if (job.model) s.model = job.model;
 	if (job.thinking) s.thinking = job.thinking;
-	if (job.timeoutS) s.timeout = job.timeoutS;
-	if (job.answerTimeoutS) s.answer_timeout = job.answerTimeoutS;
-	if (job.approvalTimeoutS) s.approval_timeout = job.approvalTimeoutS;
-	if (job.stallTimeoutS) s.stall_timeout = job.stallTimeoutS;
+	// A stored null timeout means "no limit" (0), which the continuation keeps.
+	s.timeout = job.timeoutS ?? 0;
+	s.answer_timeout = job.answerTimeoutS ?? 0;
+	s.approval_timeout = job.approvalTimeoutS ?? 0;
+	s.stall_timeout = job.stallTimeoutS ?? 0;
 	if (job.budgetUsd) s.budget = job.budgetUsd;
 	return s;
 }
@@ -110,9 +111,15 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 		timeoutS: parseDuration(pick("timeout", opts.timeout, "30m")),
 		answerTimeoutS: parseDuration(pick("answer_timeout", opts.answerTimeout, "20m")),
 		approvalTimeoutS: parseDuration(pick("approval_timeout", opts.approvalTimeout, "20m")),
-		addDirs: (opts.addDirs ?? []).map((d) => resolve(opts.clientCwd, d)),
+		// A continuation keeps its parent's extra workspace dirs and raw omp flags unless given new ones.
+		addDirs: opts.addDirs
+			? opts.addDirs.map((d) => resolve(opts.clientCwd, d))
+			: (parent?.addDirs ?? []),
 		files: (opts.files ?? []).map((f) => resolve(opts.clientCwd, f)),
-		extraArgs: shellSplit(pick("omp_args", opts.ompArgs, "") ?? ""),
+		extraArgs:
+			parent && opts.ompArgs === undefined && preset.omp_args === undefined
+				? parent.extraArgs
+				: shellSplit(pick("omp_args", opts.ompArgs, "") ?? ""),
 		noPreamble: Boolean(opts.noPreamble),
 		parentId: parent?.id ?? null,
 		resumeSession: parent?.sessionId ?? null,

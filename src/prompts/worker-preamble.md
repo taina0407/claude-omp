@@ -16,10 +16,13 @@ Rules:
   `ask_orchestrator` tool and wait for the answer instead of guessing. Ask one clear question,
   give options when you can, and keep it rare: do not ask what you can learn from the code.
 - Use `notify_orchestrator` for one-line progress notes at real milestones only.
-- Shell commands may need the orchestrator's approval. If one is denied, say which one in your
-  report and do not work around it.
+- Shell commands and code evaluation may need the orchestrator's approval, and each request
+  interrupts it. Run the commands the brief lists; for anything else (checking a file, a flag,
+  a link) prefer the read and search tools, and run a command only when nothing else can verify
+  it. If one is denied, say which one in your report and do not work around it.
 
-End with a report in exactly this shape (the orchestrator parses it):
+Unless the task gives another output format (a review, for example, has its own), end with a
+report in this shape, which the orchestrator reads:
 
 ## Summary
 

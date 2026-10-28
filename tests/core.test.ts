@@ -1,7 +1,9 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ompVersionOk } from "../src/cli/main";
 import { pickSetting } from "../src/core/config";
 import { Store } from "../src/core/store";
 import type { JobSpec } from "../src/core/types";
@@ -43,7 +45,7 @@ test("firstLine strips markdown markers", () => {
 	expect(firstLine("   ")).toBe("(untitled)");
 });
 
-test("job ids sort by time and look like v0.2's", () => {
+test("job ids sort by creation time", () => {
 	expect(newJobId(new Date(2026, 9, 28, 9, 5, 7))).toMatch(/^20261028-090507-[0-9a-f]{4}$/);
 });
 
@@ -113,13 +115,33 @@ describe("Store", () => {
 		});
 	});
 
-	test("reopening an existing database does not re-run migrations", () => {
+	test("reopening an existing database keeps its jobs", () => {
 		withStore((s, path) => {
 			s.createJob("20260101-000000-abcd", spec);
 			const again = new Store(path);
 			expect(again.getJob("20260101-000000-abcd")?.title).toBe("t");
 			again.close();
 		});
+	});
+
+	test("a database with another layout is reset", () => {
+		const dir = mkdtempSync(join(tmpdir(), "omp-store-"));
+		const path = join(dir, "state.db");
+		const old = new Database(path);
+		old.run("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+		old.run("INSERT INTO meta VALUES ('schema_version', '7')");
+		old.run("CREATE TABLE jobs (id TEXT PRIMARY KEY)");
+		old.run("INSERT INTO jobs VALUES ('20250101-000000-0000')");
+		old.close();
+		const store = new Store(path);
+		try {
+			expect(store.getJob("20250101-000000-0000")).toBeNull();
+			store.createJob("20260101-000000-abcd", spec);
+			expect(store.getJob("20260101-000000-abcd")?.title).toBe("t");
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test("finds jobs by unique prefix or suffix", () => {
@@ -163,4 +185,12 @@ describe("Store", () => {
 			expect(seen).toEqual(Array(4).fill("20260101-000000-abcd"));
 		});
 	});
+});
+
+test("doctor accepts omp 18.12 or later", () => {
+	expect(ompVersionOk("omp/18.12.6")).toBe(true);
+	expect(ompVersionOk("omp/19.0.1")).toBe(true);
+	expect(ompVersionOk("omp/18.11.9")).toBe(false);
+	expect(ompVersionOk("omp/17.40.0")).toBe(false);
+	expect(ompVersionOk("")).toBe(true);
 });

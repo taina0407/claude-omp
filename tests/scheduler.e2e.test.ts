@@ -193,6 +193,8 @@ describe("plan apply", () => {
 		const summary = (await sb.cli(["summary", "demo"])).stdout;
 		expect(summary).toContain("## group demo: 4 job(s)");
 		expect(summary).toContain("max 2 at once");
+		expect((await sb.cli(["status", "--group", "demo"])).stdout).toBe(summary);
+		await sb.cli(["status", id.a as string, "--group", "demo"], [2]);
 	});
 
 	test("a cycle or an unknown dependency is rejected before anything runs", async () => {
@@ -205,6 +207,11 @@ describe("plan apply", () => {
 		expect((await sb.cli(["plan", "apply", unknown], [2])).stderr).toContain(
 			"'zz' is neither a task in this plan nor a job",
 		);
+		const typo = writePlan(
+			"typo.yaml",
+			"defaults: {budget_usd: 1}\ntasks:\n  - {name: a, prompt: x}\n",
+		);
+		expect((await sb.cli(["plan", "apply", typo], [2])).stderr).toContain("budget_usd");
 		expect((await sb.cli(["list", "--json"])).stdout.trim()).toBe("[]");
 	});
 

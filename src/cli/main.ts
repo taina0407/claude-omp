@@ -3,9 +3,9 @@
  * omp-task: delegate coding tasks to the omp (oh-my-pi) agent and supervise them live.
  * Every command talks to the per-user daemon, which it starts when needed.
  *
- * Exit codes: 0 completed, 1 failed/cancelled/timeout, 2 usage error, 3 --max-wait expired,
- * 4 a job needs the orchestrator (a question, an approval, or an interrupted job to resume),
- * 5 the daemon could not be started or reached.
+ * Exit codes: 0 completed or a job needs the orchestrator (the WAKE: line says which),
+ * 1 failed/cancelled/timeout/skipped/over_budget, 2 usage error or refused request,
+ * 3 --max-wait expired, 5 the daemon could not be started or reached.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -38,13 +38,23 @@ import { runDaemon } from "../daemon/server";
 import { hookMain } from "../hooks/hooks";
 import { VERSION } from "../version";
 import { type Client, connect, DaemonError, existingDaemon } from "./client";
-import { ATTENTION_FEED_KINDS, emitJob, formatFeed, out } from "./render";
+import { ATTENTION_FEED_KINDS, emitJob, formatFeed, out, pendingSummary } from "./render";
 
 const EXIT_FAILED = 1;
 const EXIT_USAGE = 2;
 const EXIT_MAX_WAIT = 3;
-const EXIT_ATTENTION = 4;
 const EXIT_DAEMON = 5;
+/** The oldest omp whose RPC protocol (v2, `prompt_result`, host tools) omp-task was built on. */
+const MIN_OMP = [18, 12] as const;
+
+/** True when `omp --version` output ("omp/18.12.6") is at least MIN_OMP, or cannot be read. */
+export function ompVersionOk(text: string): boolean {
+	const m = /(\d+)\.(\d+)/.exec(text);
+	if (!m) return true;
+	const [major, minor] = [Number(m[1]), Number(m[2])];
+	return major > MIN_OMP[0] || (major === MIN_OMP[0] && minor >= MIN_OMP[1]);
+}
+
 /** One long-poll request; the CLI asks again until its own --max-wait. */
 const LONG_POLL_S = 25;
 
@@ -88,15 +98,20 @@ Usage: omp-task <command> [options]
 Commands:
   run [text...]            start a task; waits until it finishes or needs you (unless --detach)
   continue <job> [text...] new job that resumes a finished job's omp session
-  resume <job>             continue a job the daemon was running when it stopped
-  review [target]          read-only review with structured findings (see Review below)
-  wait <job...>            block until jobs finish or one needs you (exit 4); --group G
-  watch <job...>           stream job events until all jobs end (piped: attention only)
-  steer <job> [text...]    redirect a running job mid-flight
-  reply <job> [text...]    answer a running job's question (--ref to pick one)
-  approve <job>            approve a pending shell command (--session, --deny, --ref)
-  cancel <job>             abort a running job
-  status <job>             show a job's state
+  resume <job> [-d]        continue a job the daemon was running when it stopped
+                           (-d/--detach, --max-wait, --json as for run)
+  review [--staged|--base REF|--commit SHA|--job ID]  read-only review (see Review below)
+  wait <job...>            block until jobs finish or one needs you; --group G, --max-wait S,
+                           --no-checkpoint (checkpoints do not wake), --json
+  watch <job...>           stream job events until all jobs end (piped: attention only);
+                           --from-start, -v/--verbose (every event), -q/--quiet,
+                           --last N (the last N events so far, then exit)
+  steer <job> [text...]    redirect a running job mid-flight (-b FILE for a long message)
+  reply <job> [text...]    answer a running job's question (--ref to pick one, else the oldest)
+  approve <job>            approve the oldest pending request (--ref to pick one; --session:
+                           also later calls of that tool; --deny)
+  cancel <job>             cancel a running, waiting, queued, blocked or interrupted job
+  status <job>             show a job's state (--group G: the same as summary G; --json)
   result <job>             print a job's result (--full, --json)
   diff <job> [--stat]      show a worktree job's patch (--stat: one changed file per line)
   apply <job> [--3way] [--keep]  bring a worktree's changes into the main checkout
@@ -104,12 +119,14 @@ Commands:
   prune [--older 7d] [--dry-run]  remove worktrees of finished jobs older than this
   prune --jobs [--older 30d]      delete finished jobs and their files (also done daily)
   list                     list recent jobs (-n, -C, --status, --group, --json)
-  summary <group>          status, cost and changed files of every job in a group
+  summary <group>          status, cost and changed files of every job in a group (--json)
   plan apply <file>        create a group of jobs with dependencies from a YAML/JSON plan
+                           (--dry-run: print the order only; --json)
   doctor                   check the omp install, the daemon and the configuration
   setup [--stop-gate on|off]  create the config file if missing; turn the Stop review gate on/off
   hook <name>              run a Claude Code hook (session-start, session-end, stop-gate)
   daemon [status|stop]     run the daemon in the foreground, show it, or stop it (--force)
+  install-binary           download this version's release binary (checks its sha256)
 
 Task options (run, continue):
   -b, --brief FILE      read the task from a file ('-' for stdin)
@@ -148,11 +165,14 @@ Review (always read-only; the worker must submit findings through submit_review)
   --adversarial  try to break the change    --focus TEXT  what to look at hardest
   also: -m, -p, -t, --timeout, -C, -g, --budget, -d, --max-wait, --json
 
-Waking up: wait returns (exit 4) only for a question, an approval, an interrupted job, a
-checkpoint the worker reported, or a stalled worker; progress never wakes you.
+Waking up: wait (and run without --detach) returns only when every job ended or one needs you:
+a question, an approval, an interrupted job, a checkpoint the worker reported, or a stalled
+worker; progress never wakes you. The last line says which: \`WAKE: <job> <reason>\` (with a
+\`PENDING:\` line per question or approval above it) or \`WAKE: done (...)\`.
 
-Exit codes: 0 completed, 1 failed/cancelled/timeout/skipped/over_budget, 2 usage error,
-3 --max-wait expired, 4 a job needs you, 5 the daemon is unavailable.`;
+Exit codes: 0 every job completed, or a job needs you (read the WAKE: line); 1 a job failed,
+was cancelled, timed out, was skipped or went over budget; 2 usage error; 3 --max-wait expired;
+5 the daemon is unavailable.`;
 
 function parse(
 	argv: string[],
@@ -250,7 +270,12 @@ const WAKE_RESULT_LINES = 40;
 async function waitJobs(
 	client: Client,
 	target: { ids: string[]; group?: string | undefined },
-	opts: { maxWaitS: number | undefined; json: boolean; attention: boolean; checkpoint?: boolean },
+	opts: {
+		maxWaitS: number | undefined;
+		json: boolean;
+		attention: boolean;
+		checkpoint?: boolean;
+	},
 ): Promise<number> {
 	const deadline = opts.maxWaitS !== undefined ? performance.now() + opts.maxWaitS * 1000 : null;
 	while (true) {
@@ -272,11 +297,12 @@ async function waitJobs(
 			for (const v of res.jobs.filter((x) => !needs.includes(x))) {
 				out(`(job ${v.job.id} is ${v.job.status})`);
 			}
-			// Last, so the job blocks keep starting with v0.2's "## omp job" header.
+			// Last, so the job blocks keep starting with their "## omp job" header.
 			if (!opts.json) {
+				for (const v of needs) for (const p of v.pending) out(pendingSummary(p));
 				out(`WAKE: ${needs.map((v) => `${v.job.id} ${wakeReasons(v).join("+")}`).join("; ")}`);
 			}
-			return EXIT_ATTENTION;
+			return 0;
 		}
 		if (res.reason === "done") {
 			for (const v of res.jobs) {
@@ -317,6 +343,33 @@ async function afterStart(client: Client, job: Job, values: Values, verb: string
 			attention: true,
 		},
 	);
+}
+
+/** `summary <group>` and `status --group <group>`. */
+async function printSummary(group: string, json: boolean): Promise<number> {
+	const s = await (await connect()).call<GroupSummary>(
+		"GET",
+		`/v1/groups/${encodeURIComponent(group)}`,
+	);
+	if (json) {
+		out(JSON.stringify(s, null, 2));
+		return 0;
+	}
+	const limits = [
+		s.maxConcurrent !== null ? `max ${s.maxConcurrent} at once` : null,
+		s.budgetUsd !== null ? `budget $${s.budgetUsd}` : null,
+	].filter(Boolean);
+	const suffix = limits.length ? ` (${limits.join(", ")})` : "";
+	out(`## group ${s.group}: ${s.jobs.length} job(s), spent $${s.spentUsd.toFixed(4)}${suffix}`);
+	for (const j of s.jobs) {
+		const files = j.changedFiles === null ? "-" : String(j.changedFiles.length);
+		const after = j.after.length ? `  after ${j.after.join(",")}` : "";
+		out(
+			`${j.id}  ${j.status.padEnd(11)}  $${j.costUsd.toFixed(4)}  files ${files.padStart(2)}  ${j.title.slice(0, 50)}${after}`,
+		);
+		for (const e of j.errors.slice(-1)) out(`    ${e}`);
+	}
+	return 0;
 }
 
 async function control(client: Client, ref: string, req: ControlRequest): Promise<number> {
@@ -412,7 +465,6 @@ const commands: Record<string, Command> = {
 
 	async wait(argv) {
 		const { values, positionals } = parse(argv, {
-			interval: { type: "string" }, // accepted for v0.2 compatibility; waiting is push-based now
 			"max-wait": { type: "string" },
 			"no-attention": { type: "boolean" },
 			"no-checkpoint": { type: "boolean" },
@@ -440,16 +492,26 @@ const commands: Record<string, Command> = {
 			"from-start": { type: "boolean" },
 			quiet: { type: "boolean", short: "q" },
 			verbose: { type: "boolean", short: "v" },
-			interval: { type: "string" }, // accepted for v0.2 compatibility
+			last: { type: "string" },
 		});
 		if (!positionals.length) throw new UsageError("watch needs at least one job id");
 		// Piped (Monitor, scripts): only what needs the orchestrator, so every line is worth a wake-up.
 		const quiet = values.quiet || (!values.verbose && !process.stdout.isTTY);
+		// --last N: the job's last N events so far, then exit (safe on a job that still runs).
+		const last = num(values.last, "--last");
 		const client = await connect();
-		for await (const event of client.feed(positionals, Boolean(values["from-start"]))) {
-			if (event.type === "end") return 0;
-			if (!quiet || ATTENTION_FEED_KINDS.has(event.entry.kind)) out(formatFeed(event.entry));
+		const lines: string[] = [];
+		for await (const event of client.feed(
+			positionals,
+			last !== undefined || Boolean(values["from-start"]),
+			last === undefined,
+		)) {
+			if (event.type === "end") break;
+			if (quiet && !ATTENTION_FEED_KINDS.has(event.entry.kind)) continue;
+			if (last === undefined) out(formatFeed(event.entry));
+			else lines.push(formatFeed(event.entry));
 		}
+		if (last !== undefined) for (const line of lines.slice(-last)) out(line);
 		return 0;
 	},
 
@@ -512,9 +574,16 @@ const commands: Record<string, Command> = {
 	},
 
 	async status(argv) {
-		const { values, positionals } = parse(argv, { json: { type: "boolean" } });
+		const { values, positionals } = parse(argv, {
+			group: { type: "string", short: "g" },
+			json: { type: "boolean" },
+		});
 		const [ref] = positionals;
-		if (!ref) throw new UsageError("status needs a job id");
+		if (values.group) {
+			if (ref) throw new UsageError("status takes a job id or --group, not both");
+			return printSummary(values.group as string, Boolean(values.json));
+		}
+		if (!ref) throw new UsageError("status needs a job id (or --group NAME)");
 		const { job, pending } = await getJob(await connect(), ref);
 		if (isTerminal(job.status) || job.status === "interrupted" || pending.length) {
 			emitJob(job, pending, Boolean(values.json));
@@ -660,29 +729,7 @@ const commands: Record<string, Command> = {
 		const { values, positionals } = parse(argv, { json: { type: "boolean" } });
 		const [group] = positionals;
 		if (!group) throw new UsageError("summary needs a group name");
-		const s = await (await connect()).call<GroupSummary>(
-			"GET",
-			`/v1/groups/${encodeURIComponent(group)}`,
-		);
-		if (values.json) {
-			out(JSON.stringify(s, null, 2));
-			return 0;
-		}
-		const limits = [
-			s.maxConcurrent !== null ? `max ${s.maxConcurrent} at once` : null,
-			s.budgetUsd !== null ? `budget $${s.budgetUsd}` : null,
-		].filter(Boolean);
-		const suffix = limits.length ? ` (${limits.join(", ")})` : "";
-		out(`## group ${s.group}: ${s.jobs.length} job(s), spent $${s.spentUsd.toFixed(4)}${suffix}`);
-		for (const j of s.jobs) {
-			const files = j.changedFiles === null ? "-" : String(j.changedFiles.length);
-			const after = j.after.length ? `  after ${j.after.join(",")}` : "";
-			out(
-				`${j.id}  ${j.status.padEnd(11)}  $${j.costUsd.toFixed(4)}  files ${files.padStart(2)}  ${j.title.slice(0, 50)}${after}`,
-			);
-			for (const e of j.errors.slice(-1)) out(`    ${e}`);
-		}
-		return 0;
+		return printSummary(group, Boolean(values.json));
 	},
 
 	async plan(argv) {
@@ -751,10 +798,16 @@ const commands: Record<string, Command> = {
 
 	async doctor() {
 		const bin = ompBin();
+		let failed = !bin;
 		out(`omp binary:   ${bin ?? "NOT FOUND"}`);
 		if (bin) {
 			const p = Bun.spawnSync([bin, "--version"], { stdout: "pipe", stderr: "ignore" });
-			out(`omp version:  ${p.stdout.toString().trim()}`);
+			const version = p.stdout.toString().trim();
+			const ok = ompVersionOk(version);
+			out(
+				`omp version:  ${version}${ok ? "" : ` (TOO OLD: omp-task needs omp ${MIN_OMP.join(".")} or later)`}`,
+			);
+			if (!ok) failed = true;
 		}
 		out(`omp-task:     ${VERSION} (bun ${Bun.version}${COMPILED ? ", compiled" : ""})`);
 		out(`state dir:    ${stateDir()}`);
@@ -779,7 +832,7 @@ const commands: Record<string, Command> = {
 		out(
 			`claude:       ${process.env.OMP_TASK_CLAUDE_SESSION ? `session ${process.env.OMP_TASK_CLAUDE_SESSION}` : "no session id (hooks not active)"}`,
 		);
-		return bin ? 0 : EXIT_FAILED;
+		return failed ? EXIT_FAILED : 0;
 	},
 
 	async daemon(argv) {

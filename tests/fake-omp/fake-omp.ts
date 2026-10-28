@@ -31,7 +31,7 @@ type Frame = Record<string, unknown>;
 const argv = process.argv.slice(2);
 if (process.env.FAKE_OMP_LOG) appendFileSync(process.env.FAKE_OMP_LOG, `${JSON.stringify(argv)}\n`);
 if (argv[0] === "--version") {
-	console.log("omp/0.0.0-fake");
+	console.log("omp/18.12.6-fake");
 	process.exit(0);
 }
 const resumeAt = argv.indexOf("--resume");

@@ -71,7 +71,7 @@ describe("crash recovery", () => {
 		process.kill(await daemonPid(), "SIGKILL");
 
 		// The next command starts a fresh daemon, which finds the job orphaned.
-		const waited = await sb.cli(["wait", job], [4]);
+		const waited = await sb.cli(["wait", job], [0]);
 		expect(waited.stdout).toContain("INTERRUPTED");
 		expect(waited.stdout).toContain(`omp-task resume ${job}`);
 		expect(sb.jobStatus(job)).toBe("interrupted");
@@ -98,7 +98,7 @@ describe("crash recovery", () => {
 		process.kill(await daemonPid(), "SIGKILL");
 		await Bun.sleep(500);
 		expect(await processGone(ompPid, 100)).toBe(false); // the orphan is still working
-		await sb.cli(["wait", job], [4]);
+		await sb.cli(["wait", job], [0]);
 		expect(await processGone(ompPid, 2_000)).toBe(true);
 		expect(sb.daemonLog()).toContain("stopped an orphaned omp worker");
 	});
@@ -107,7 +107,7 @@ describe("crash recovery", () => {
 		const job = await sb.start(["SLOWSTART WRITE late.txt"]);
 		await sb.waitForStatus(job, "running");
 		process.kill(await daemonPid(), "SIGKILL");
-		await sb.cli(["wait", job], [4]);
+		await sb.cli(["wait", job], [0]);
 		const out = JSON.parse((await sb.cli(["resume", job, "--json"])).stdout);
 		expect(out.status).toBe("completed");
 		expect(out.changed_files).toEqual(["late.txt"]);

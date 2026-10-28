@@ -1,5 +1,5 @@
 /**
- * Where omp-task keeps its state and config. The environment overrides are the same as v0.2:
+ * Where omp-task keeps its state and config. Environment overrides:
  * OMP_TASK_HOME (state dir), OMP_TASK_CONFIG (config file), OMP_TASK_OMP_BIN (omp binary).
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

@@ -30,6 +30,18 @@ describe("quiet by default", () => {
 		expect(lines[0]).toContain("DONE: completed");
 	});
 
+	test("watch --last N prints the last events of a running job and exits", async () => {
+		const job = await sb.start(["NOTIFY SLEEP"]);
+		await sb.waitForStatus(job, "running");
+		await Bun.sleep(300);
+		const { stdout } = await sb.cli(["watch", job, "--verbose", "--last", "2"]);
+		const lines = stdout.trim().split("\n");
+		expect(lines.length).toBeGreaterThan(0);
+		expect(lines.length).toBeLessThanOrEqual(2);
+		expect(sb.jobStatus(job)).toBe("running");
+		await sb.cli(["cancel", job]);
+	});
+
 	test("watch --verbose still shows every event", async () => {
 		const job = await sb.start(["TOOLS 3 WRITE a.txt"]);
 		await sb.waitJson(job);
@@ -59,7 +71,7 @@ describe("quiet by default", () => {
 describe("checkpoints", () => {
 	test("a checkpoint wakes wait once, with the note", async () => {
 		const job = await sb.start(["CHECKPOINT SLEEP"]);
-		const first = await sb.cli(["wait", job], [4]);
+		const first = await sb.cli(["wait", job], [0]);
 		expect(first.stdout).toContain("CHECKPOINT: design done");
 		expect(first.stdout).toContain(`WAKE: ${job} checkpoint`);
 		// Delivered once: the next wait keeps waiting.
@@ -84,10 +96,34 @@ describe("checkpoints", () => {
 	});
 });
 
+describe("wake output", () => {
+	test("a PENDING line per approval sits above WAKE, and wait exits 0", async () => {
+		const job = await sb.start(["BASHCHAIN"]);
+		const r = await sb.cli(["wait", job]);
+		const lines = r.stdout.trim().split("\n");
+		expect(lines.at(-1)).toBe(`WAKE: ${job} approval`);
+		expect(lines.at(-2)).toMatch(
+			new RegExp(
+				`^PENDING: ${job} approval bash: Command: make test && rm -rf build \\(ref .+\\)$`,
+			),
+		);
+		await sb.cli(["approve", job, "--deny"]);
+		await sb.waitJson(job);
+	});
+
+	test("a question's PENDING line keeps the first line and counts the rest", async () => {
+		const job = await sb.start(["ASK"]);
+		const r = await sb.cli(["wait", job], [0]);
+		expect(r.stdout).toContain(`PENDING: ${job} question: Which color?`);
+		await sb.cli(["reply", job, "red"]);
+		await sb.waitJson(job);
+	});
+});
+
 describe("stalled workers", () => {
 	test("no activity for --stall-timeout wakes wait", async () => {
 		const job = await sb.start(["--stall-timeout", "1", "SLEEP"]);
-		const r = await sb.cli(["wait", job], [4]);
+		const r = await sb.cli(["wait", job], [0]);
 		expect(r.stdout).toContain("STALLED: no worker activity for 1s");
 		expect(r.stdout).toContain(`omp-task cancel ${job}`);
 		await sb.cli(["cancel", job]);
@@ -95,7 +131,7 @@ describe("stalled workers", () => {
 
 	test("the same failing call three times wakes wait", async () => {
 		const job = await sb.start(["FLAKY SLEEP"]);
-		const r = await sb.cli(["wait", job], [4]);
+		const r = await sb.cli(["wait", job], [0]);
 		expect(r.stdout).toContain("STALLED: the same call failed 3 times: bash: bun test");
 		await sb.cli(["cancel", job]);
 	});
@@ -117,7 +153,7 @@ describe("approval rules", () => {
 	});
 
 	test("an allow rule never approves a chained command", async () => {
-		const r = await sb.cli(["run", "--allow", "make *", "BASHCHAIN"], [4]);
+		const r = await sb.cli(["run", "--allow", "make *", "BASHCHAIN"], [0]);
 		expect(r.stdout).toContain("APPROVAL needed");
 		expect(r.stdout).toContain("make test && rm -rf build");
 		const job = r.stdout.split(/\s+/)[3] as string;
