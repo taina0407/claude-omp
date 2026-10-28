@@ -43,6 +43,7 @@ class OmpRpcSession implements BackendSession {
 		};
 		this.#protocol = new OmpRpcProtocol({
 			prompt: spec.prompt,
+			extraTools: spec.hostTools ?? [],
 			send: (f) => this.#send(f),
 			emit,
 		});
@@ -134,8 +135,8 @@ class OmpRpcSession implements BackendSession {
 		this.#protocol.abort();
 	}
 
-	answer(ref: string, text: string): void {
-		this.#protocol.answer(ref, text);
+	answer(ref: string, text: string, isError = false): void {
+		this.#protocol.answer(ref, text, isError);
 	}
 
 	decide(ref: string, decision: "approve" | "session" | "deny"): void {

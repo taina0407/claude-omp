@@ -1,6 +1,7 @@
 /** Request bodies of the daemon's HTTP API (validated) and the shapes it returns. */
 import { z } from "zod";
 import type { CommandResult, FeedEntry, Job, Notice, Pending } from "../core/types";
+import { REVIEW_MODES } from "../review/schema";
 
 const optionalString = z.string().optional();
 
@@ -36,6 +37,20 @@ export const createJobBody = z.object({
 	options: jobOptions,
 });
 export type CreateJobBody = z.infer<typeof createJobBody>;
+
+export const reviewBody = z.object({
+	target: z.discriminatedUnion("kind", [
+		z.object({ kind: z.literal("uncommitted") }),
+		z.object({ kind: z.literal("staged") }),
+		z.object({ kind: z.literal("base"), ref: z.string().min(1) }),
+		z.object({ kind: z.literal("commit"), ref: z.string().min(1) }),
+		z.object({ kind: z.literal("job"), ref: z.string().min(1) }),
+	]),
+	mode: z.enum(REVIEW_MODES),
+	focus: z.string().nullable().optional(),
+	options: jobOptions.omit({ prompt: true }),
+});
+export type ReviewBody = z.infer<typeof reviewBody>;
 
 /** A whole DAG at once (`omp-task plan apply`); `after` names other tasks or existing jobs. */
 export const planBody = z.object({

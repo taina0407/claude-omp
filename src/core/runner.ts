@@ -10,6 +10,15 @@ import { MAX_PROMPT_BYTES } from "../backends/omp-rpc/protocol";
 import { ompRpcBackend } from "../backends/omp-rpc/session";
 import type { Backend, BackendEvent, BackendSession } from "../backends/types";
 import { createWorktree, worktreeCwd } from "../isolation/worktree";
+import { renderReview } from "../review/render";
+import {
+	MAX_REVIEW_RETRIES,
+	type Review,
+	reviewIssues,
+	reviewSchema,
+	SUBMIT_REVIEW,
+	SUBMIT_REVIEW_TOOL,
+} from "../review/schema";
 import { changedFiles, type Snapshot, snapshot, withoutDir } from "./git";
 import { jobDir, PREAMBLE_FILE, stateDir } from "./paths";
 import { decideApproval } from "./policy";
@@ -109,6 +118,9 @@ export class JobRunner {
 	#errorStreak = 0;
 	#failures = new Map<string, number>();
 	#toolDetail = new Map<string, string>();
+	/** Review jobs: the accepted review, and how many submissions were rejected. */
+	#review: Review | null = null;
+	#rejectedReviews = 0;
 	#done: Promise<Job>;
 	#resolveDone!: (job: Job) => void;
 
@@ -148,6 +160,11 @@ export class JobRunner {
 		this.#baseDurationS = job.durationS ?? 0;
 		this.#workCwd = worktreeCwd(job);
 		this.#modelUsed = job.modelUsed;
+		const reviewFile = join(jobDir(job.id), "result.json");
+		if (job.review && existsSync(reviewFile)) {
+			// Accepted before an interruption: a resumed review job keeps it.
+			this.#review = JSON.parse(readFileSync(reviewFile, "utf8")) as Review;
+		}
 		this.#done = new Promise((resolve) => {
 			this.#resolveDone = resolve;
 		});
@@ -209,6 +226,7 @@ export class JobRunner {
 				prompt,
 				rawLogPath: join(dir, "events.jsonl"),
 				stderrPath: join(dir, "stderr.log"),
+				hostTools: job.review ? [SUBMIT_REVIEW_TOOL] : [],
 			},
 			(e) => this.#onEvent(e),
 		);
@@ -387,6 +405,10 @@ export class JobRunner {
 				});
 				break;
 			}
+			case "tool_call":
+				if (e.name === SUBMIT_REVIEW && this.#job.review) this.#onReview(e.ref, e.args);
+				else this.#session?.answer(e.ref, `unknown host tool ${e.name}`, true);
+				break;
 			case "warning":
 				this.#feed("info", e.text.slice(0, 300));
 				break;
@@ -394,6 +416,33 @@ export class JobRunner {
 				void this.#finishFromEnd(e);
 				break;
 		}
+	}
+
+	/** Validates a submitted review; a bad one goes back to the worker with what to fix. */
+	#onReview(ref: string, args: Record<string, unknown>): void {
+		const parsed = reviewSchema.safeParse(args);
+		if (parsed.success) {
+			this.#review = parsed.data;
+			writeFileSync(join(jobDir(this.#jobId), "result.json"), JSON.stringify(parsed.data, null, 2));
+			const n = parsed.data.findings.length;
+			this.#feed("review", `${parsed.data.verdict}, ${n} finding(s)`);
+			this.#session?.answer(ref, "Review recorded. End your turn now with one short line.");
+			return;
+		}
+		this.#rejectedReviews++;
+		const issues = reviewIssues(parsed.error);
+		if (this.#rejectedReviews > MAX_REVIEW_RETRIES) {
+			this.#errors.push(`review rejected ${this.#rejectedReviews} times:\n${issues}`);
+			this.#feed("error", "the worker kept submitting invalid reviews");
+			this.#session?.answer(ref, "Rejected again. Stop now and end your turn.", true);
+			return;
+		}
+		this.#feed("info", `invalid review submission ${this.#rejectedReviews}; sent back`);
+		this.#session?.answer(
+			ref,
+			`submit_review rejected; nothing was recorded. Fix these fields and call submit_review again:\n${issues}`,
+			true,
+		);
 	}
 
 	/** A run of failures, or the same call failing again and again, means the worker is stuck. */
@@ -589,6 +638,14 @@ export class JobRunner {
 		const after = this.#gitBefore ? snapshot(this.#workCwd) : null;
 		this.#errors.push(...errors);
 		const changed = withoutDir(changedFiles(this.#gitBefore, after), this.#workCwd, stateDir());
+		if (job.review) {
+			if (this.#review) {
+				this.#finalText = renderReview(this.#review, job.review.target);
+			} else if (status === "completed") {
+				status = "failed";
+				this.#errors.push("the worker ended without submitting a valid review");
+			}
+		}
 		const progress = this.#progress();
 		writeFileSync(join(jobDir(job.id), "result.md"), this.#finalText);
 		this.#store.clearPending(job.id);

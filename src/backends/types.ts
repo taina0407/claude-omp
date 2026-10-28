@@ -4,6 +4,14 @@
  */
 import type { Access, ApprovalDecision } from "../core/types";
 
+/** A tool the host offers the worker on top of the built-in ones (JSON-schema parameters). */
+export interface HostTool {
+	name: string;
+	label: string;
+	description: string;
+	parameters: Record<string, unknown>;
+}
+
 export interface SessionSpec {
 	cwd: string;
 	access: Access;
@@ -19,6 +27,8 @@ export interface SessionSpec {
 	/** Where the backend writes the raw protocol frames and the worker's stderr. */
 	rawLogPath: string;
 	stderrPath: string;
+	/** Extra host tools for this session; their calls arrive as `tool_call` events. */
+	hostTools?: HostTool[];
 }
 
 export type EndOutcome = "completed" | "aborted" | "failed";
@@ -42,6 +52,8 @@ export type BackendEvent =
 	| { kind: "subagent"; id: string; status: string; description: string; costUsd: number | null }
 	| { kind: "question"; ref: string; question: string; options: string[]; context: string | null }
 	| { kind: "question_withdrawn"; ref: string }
+	/** A call of one of the session's extra host tools; answer it with `answer(ref, …)`. */
+	| { kind: "tool_call"; ref: string; name: string; args: Record<string, unknown> }
 	| { kind: "approval"; ref: string; tool: string; detail: string; options: string[] }
 	| { kind: "warning"; text: string }
 	| { kind: "end"; outcome: EndOutcome; error: string | null; exitCode: number | null };
@@ -49,7 +61,8 @@ export type BackendEvent =
 export interface BackendSession {
 	steer(text: string): void;
 	abort(): void;
-	answer(ref: string, text: string): void;
+	/** Replies to a question or an extra host tool call; `isError` marks the call as failed. */
+	answer(ref: string, text: string, isError?: boolean): void;
 	decide(ref: string, decision: ApprovalDecision): void;
 	/** Ends the worker process; resolves once it has exited. */
 	close(): Promise<void>;

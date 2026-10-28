@@ -1,4 +1,5 @@
 /** Job model shared by the store, the runner and the CLI. */
+import type { ReviewSpec } from "../review/schema";
 
 /** `blocked`: waiting for the jobs in `after` · `queued`: waiting for a free slot. */
 export const ACTIVE_STATUSES = ["blocked", "queued", "starting", "running", "waiting"] as const;
@@ -72,6 +73,8 @@ export interface JobSpec {
 	deny?: string[];
 	/** No worker activity for this long raises a `stalled` notice; null disables it. */
 	stallTimeoutS?: number | null;
+	/** Set for review jobs (`omp-task review`): they must hand in a review with submit_review. */
+	review?: ReviewSpec | null;
 }
 
 export interface Job extends JobSpec {
@@ -113,6 +116,7 @@ export interface Job extends JobSpec {
 	stallTimeoutS: number | null;
 	/** Things the orchestrator should see that are not questions or approvals; `wait` consumes them. */
 	notices: Notice[];
+	review: ReviewSpec | null;
 }
 
 export type NoticeKind = "checkpoint" | "stalled";

@@ -8,7 +8,7 @@
  * `agent_end` → `prompt_result{status}` → `session_settled`.
  */
 import type { ApprovalDecision } from "../../core/types";
-import type { BackendEvent } from "../types";
+import type { BackendEvent, HostTool } from "../types";
 import { type Frame, isRecord } from "./framing";
 import { ASK_TOOL, HOST_TOOL_NAMES, HOST_TOOLS, NOTIFY_TOOL } from "./host-tools";
 
@@ -24,6 +24,8 @@ export interface ProtocolOptions {
 	prompt: string;
 	send: (frame: Frame) => void;
 	emit: (event: BackendEvent) => void;
+	/** Host tools offered on top of ask/notify (e.g. submit_review). */
+	extraTools?: HostTool[];
 }
 
 function str(v: unknown): string {
@@ -67,9 +69,11 @@ export class OmpRpcProtocol {
 	readonly #approvals = new Map<string, ApprovalRequest>();
 	#nextId = 0;
 	#promptId: string | null = null;
+	readonly #extraNames: ReadonlySet<string>;
 
 	constructor(opts: ProtocolOptions) {
 		this.#opts = opts;
+		this.#extraNames = new Set((opts.extraTools ?? []).map((t) => t.name));
 	}
 
 	#command(type: string, fields: Frame = {}): string {
@@ -167,7 +171,8 @@ export class OmpRpcProtocol {
 
 	#sendSetupAndPrompt(): void {
 		this.phase = "prompting";
-		this.#command("set_host_tools", { tools: HOST_TOOLS });
+		const extra = (this.#opts.extraTools ?? []).map((t) => ({ ...t, loadMode: "essential" }));
+		this.#command("set_host_tools", { tools: [...HOST_TOOLS, ...extra] });
 		this.#command("set_subagent_subscription", { level: "progress" });
 		this.#command("get_state");
 		this.#promptId = this.#command("prompt", { message: this.#opts.prompt });
@@ -192,6 +197,8 @@ export class OmpRpcProtocol {
 				options: Array.isArray(args.options) ? args.options.map(String) : [],
 				context: str(args.context) || null,
 			});
+		} else if (this.#extraNames.has(name)) {
+			this.#opts.emit({ kind: "tool_call", ref: id, name, args });
 		} else {
 			this.#opts.send(textResult(id, `unknown host tool ${name}`, true));
 		}
@@ -206,7 +213,7 @@ export class OmpRpcProtocol {
 		const options = Array.isArray(f.options) ? f.options.map(String) : [];
 		if (method === "select" && match) {
 			const tool = match[1] as string;
-			if (HOST_TOOL_NAMES.has(tool)) {
+			if (HOST_TOOL_NAMES.has(tool) || this.#extraNames.has(tool)) {
 				// Talking to the orchestrator is always allowed.
 				const value = options.find((o) => /session/i.test(o)) ?? options[0] ?? "Approve";
 				this.#opts.send({ type: "extension_ui_response", id, value });
@@ -279,8 +286,8 @@ export class OmpRpcProtocol {
 		this.#command("abort");
 	}
 
-	answer(ref: string, text: string): void {
-		this.#opts.send(textResult(ref, text));
+	answer(ref: string, text: string, isError = false): void {
+		this.#opts.send(textResult(ref, text, isError));
 	}
 
 	decide(ref: string, decision: ApprovalDecision): void {

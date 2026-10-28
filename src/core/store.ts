@@ -99,6 +99,8 @@ const MIGRATIONS: string[] = [
 		max_concurrent INTEGER,
 		budget_usd REAL
 	);`,
+	// v1 M5: review jobs.
+	`ALTER TABLE jobs ADD COLUMN review TEXT;`,
 ];
 
 type Row = Record<string, unknown>;
@@ -127,6 +129,7 @@ const JSON_COLUMNS = new Set([
 	"allow",
 	"deny",
 	"notices",
+	"review",
 ]);
 
 function camel(key: string): string {
@@ -198,11 +201,11 @@ export class Store {
 				`INSERT INTO jobs (id, parent_id, title, status, cwd, access, model, thinking, timeout_s,
 				answer_timeout_s, approval_timeout_s, add_dirs, files, extra_args, no_preamble,
 				resume_session, created_at, isolate, carry_dirty, after, after_any, group_name,
-				budget_usd, allow, deny, stall_timeout_s)
+				budget_usd, allow, deny, stall_timeout_s, review)
 			VALUES ($id, $parentId, $title, $status, $cwd, $access, $model, $thinking, $timeoutS,
 				$answerTimeoutS, $approvalTimeoutS, $addDirs, $files, $extraArgs, $noPreamble,
 				$resumeSession, $createdAt, $isolate, $carryDirty, $after, $afterAny, $groupName,
-				$budgetUsd, $allow, $deny, $stallTimeoutS)`,
+				$budgetUsd, $allow, $deny, $stallTimeoutS, $review)`,
 			)
 			.run({
 				id,
@@ -231,6 +234,7 @@ export class Store {
 				allow: JSON.stringify(spec.allow ?? []),
 				deny: JSON.stringify(spec.deny ?? []),
 				stallTimeoutS: spec.stallTimeoutS ?? null,
+				review: spec.review ? JSON.stringify(spec.review) : null,
 			});
 		return this.getJob(id) as Job;
 	}

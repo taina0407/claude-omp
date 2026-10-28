@@ -36,6 +36,12 @@ function pendingJson(p: Pending) {
 	};
 }
 
+/** A review job's validated review (result.json), or null. */
+function reviewOf(job: Job): unknown {
+	const file = join(jobDir(job.id), "result.json");
+	return job.review && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+}
+
 export function jobJson(job: Job, pending: Pending[], full = false) {
 	const file = join(jobDir(job.id), "result.md");
 	let result = existsSync(file) ? readFileSync(file, "utf8") : "";
@@ -71,6 +77,8 @@ export function jobJson(job: Job, pending: Pending[], full = false) {
 		after_any_outcome: job.afterAny,
 		budget_usd: job.budgetUsd,
 		notices: job.notices,
+		review_of: job.review,
+		review: reviewOf(job),
 		created_at: job.createdAt,
 		finished_at: job.finishedAt,
 		pending: pending.map(pendingJson),
@@ -166,7 +174,8 @@ export function emitJob(
 	let result = data.result || "(no final message)";
 	let truncated = data.result_truncated;
 	const lines = result.split("\n");
-	if (opts.maxResultLines && lines.length > opts.maxResultLines) {
+	// A review is the whole point of a review job: never cut it.
+	if (opts.maxResultLines && !job.review && lines.length > opts.maxResultLines) {
 		result = lines.slice(0, opts.maxResultLines).join("\n");
 		truncated = true;
 	}

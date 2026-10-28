@@ -14,6 +14,9 @@
  *   TOOLS <n>     n quick read tool calls
  *   FLAKY         run `bun test` three times, failing each time
  *   SUBAGENT      report one subagent that costs $0.002
+ *   REVIEW        submit_review with a valid review (one high finding)
+ *   REVIEWBAD     submit an invalid review first, then a valid one
+ *   REVIEWWORSE   keep submitting invalid reviews (three times)
  *   SLEEP         idle up to 30s; `steer` ends it early, `abort` ends the run as aborted
  *   SLOWSTART     take 3s to accept the prompt (the session is not saved until then)
  *   ERROR         the final message has stopReason "error"
@@ -96,6 +99,52 @@ function respond(f: Frame, data?: unknown): void {
 }
 
 // ---------------------------------------------------------------- one prompt
+
+const VALID_REVIEW = {
+	verdict: "request_changes",
+	summary: "The greeting changed without a test.",
+	findings: [
+		{
+			severity: "high",
+			file: "existing.txt",
+			line: 1,
+			title: "Greeting is wrong",
+			detail: "It says bye.",
+			suggestion: "Say hi.",
+			confidence: 0.9,
+		},
+	],
+};
+
+/** Calls submit_review with each payload in turn; returns what the host answered each time. */
+async function submitReviews(payloads: unknown[]): Promise<string[]> {
+	const answers: string[] = [];
+	for (const [i, payload] of payloads.entries()) {
+		const id = `rv${i}`;
+		emit({
+			type: "host_tool_call",
+			id,
+			toolCallId: id,
+			toolName: "submit_review",
+			arguments: payload,
+		});
+		const res = await waitFor((f) => f.type === "host_tool_result" && f.id === id);
+		answers.push(res?.isError ? "rejected" : "accepted");
+		if (res?.isError) {
+			// Echo the host's complaint as a progress note, so tests can see what the worker was told.
+			const text = (res.result as { content?: { text?: string }[] }).content?.[0]?.text ?? "";
+			emit({
+				type: "host_tool_call",
+				id: `${id}-note`,
+				toolCallId: `${id}-note`,
+				toolName: "notify_orchestrator",
+				arguments: { message: `told: ${text.replaceAll("\n", " ")}` },
+			});
+			await waitFor((f) => f.type === "host_tool_result" && f.id === `${id}-note`);
+		}
+	}
+	return answers;
+}
 
 async function runPrompt(prompt: Frame): Promise<void> {
 	const text = String(prompt.message);
@@ -207,6 +256,15 @@ async function runPrompt(prompt: Frame): Promise<void> {
 				isError: denied,
 				result: { content: [{ type: "text", text: denied ? "Tool call denied by user" : "ok" }] },
 			});
+		} else if (word === "REVIEW" || word === "REVIEWBAD" || word === "REVIEWWORSE") {
+			const bad = { verdict: "maybe", summary: "", findings: [{ severity: "huge" }] };
+			const payloads =
+				word === "REVIEW"
+					? [VALID_REVIEW]
+					: word === "REVIEWBAD"
+						? [bad, VALID_REVIEW]
+						: [bad, bad, bad];
+			notes.push(`review=${(await submitReviews(payloads)).join(",")}`);
 		} else if (word === "SUBAGENT") {
 			const base = { id: "Helper", agent: "sonic", description: "Read a file", index: 0 };
 			emit({ type: "subagent_lifecycle", payload: { ...base, status: "started" } });

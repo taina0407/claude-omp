@@ -21,6 +21,7 @@ import {
 	type PruneResponse,
 	planBody,
 	pruneBody,
+	reviewBody,
 	shutdownBody,
 	type WaitResponse,
 	type WaitView,
@@ -34,6 +35,8 @@ import { Store } from "../core/store";
 import { isActive, isTerminal, type Job } from "../core/types";
 import { errorText, nowIso, parseDuration, stopOrphanWorker, UsageError } from "../core/util";
 import { applyWorktree, removeWorktree, worktreePatch } from "../isolation/worktree";
+import { createReviewJob } from "../review/review";
+import type { ReviewTarget } from "../review/target";
 import { VERSION } from "../version";
 import { acquireLock, releaseLock } from "./lock";
 import { log } from "./log";
@@ -303,6 +306,9 @@ export class Daemon {
 		if (resource === "feed" && method === "GET") return this.#feed(url);
 		if (resource === "prune" && method === "POST") return this.#prune(await body(req, pruneBody));
 		if (resource === "plans" && method === "POST") return this.#plan(await body(req, planBody));
+		if (resource === "reviews" && method === "POST") {
+			return this.#review(await body(req, reviewBody));
+		}
 		if (resource === "groups" && ref && method === "GET") return this.#group(ref);
 
 		if (resource === "jobs") {
@@ -356,6 +362,25 @@ export class Daemon {
 			}
 		}
 		const job = createJob(this.store, b.options, parent);
+		this.#schedule();
+		return json(this.#view(this.store.getJob(job.id) as Job), 201);
+	}
+
+	#review(b: z.infer<typeof reviewBody>): Response {
+		let target: ReviewTarget;
+		if (b.target.kind === "job") {
+			const job = resolveJob(this.store, b.target.ref);
+			if (isActive(job.status)) throw new HttpError(409, `job ${job.id} is still ${job.status}`);
+			target = { kind: "job", job };
+		} else {
+			target = b.target;
+		}
+		const job = createReviewJob(this.store, {
+			target,
+			mode: b.mode,
+			focus: b.focus ?? null,
+			options: b.options,
+		});
 		this.#schedule();
 		return json(this.#view(this.store.getJob(job.id) as Job), 201);
 	}

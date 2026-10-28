@@ -2,6 +2,24 @@
 
 ## Unreleased: v1
 
+### M5: structured review
+
+- `omp-task review` runs a read-only job that must hand in its review through the
+  `submit_review` host tool: a verdict (`approve`, `approve_with_comments`, `request_changes`), a
+  summary, and findings with severity, file, line, title, detail, suggestion and confidence. The
+  payload is checked against a zod schema; an invalid one goes back to the worker with the fields
+  to fix (twice at most), and a worker that never hands in a valid review fails the job.
+- Targets: uncommitted changes including untracked files (default), `--staged`, `--base <ref>`
+  (since the merge-base, uncommitted changes included), `--commit <sha>`, and `--job <id>` for a
+  worktree job's changes before `apply`. `--adversarial` switches to a prompt that tries to break
+  the change; `--focus` says what to look at hardest. Model, preset, timeout, group and budget
+  work as for `run`.
+- The diff is saved as `review.diff` in the job directory and pasted into the prompt when under
+  150 KB; larger diffs are referenced with the list of files.
+- `result`/`wait` print the review as markdown (never cut short); `--json` adds `review` (the
+  validated object) and `review_of` (mode, target, focus).
+- Backends can now offer extra host tools per session.
+
 ### M4: scheduler, dependencies, budgets, and waking the orchestrator less
 
 - Attention: the orchestrator is woken only when it has something to do. `wait` returns (exit 4)

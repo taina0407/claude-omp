@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { canIsolate } from "../isolation/worktree";
+import type { ReviewSpec } from "../review/schema";
 import { getPreset, loadConfig, pickSetting, type Settings } from "./config";
 import { gitRoot } from "./git";
 import { jobDir } from "./paths";
@@ -48,6 +49,13 @@ export interface JobOptions {
 	allow?: string[] | undefined;
 	deny?: string[] | undefined;
 	stallTimeout?: string | undefined;
+	/** Makes this a review job (set by `omp-task review`, not by `run`). */
+	review?: ReviewSpec | undefined;
+	/**
+	 * Files written into the job directory before the job starts (name → content). The job dir
+	 * is then readable by the worker, and `{{job_dir}}` in the prompt names it.
+	 */
+	attachments?: Record<string, string> | undefined;
 }
 
 function settingsOf(job: Job): Settings {
@@ -130,9 +138,21 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 	if (spec.groupName && !/^[\w.-]{1,64}$/.test(spec.groupName)) {
 		throw new UsageError("group names use letters, digits, '.', '-' and '_' (at most 64)");
 	}
+	if (opts.review) spec.review = opts.review;
 	const id = newJobId();
-	mkdirSync(jobDir(id), { recursive: true });
-	writeFileSync(join(jobDir(id), "prompt.md"), opts.prompt);
+	const dir = jobDir(id);
+	mkdirSync(dir, { recursive: true });
+	let prompt = opts.prompt;
+	if (opts.attachments) {
+		for (const [name, content] of Object.entries(opts.attachments)) {
+			if (name.includes("/") || name.startsWith("."))
+				throw new UsageError(`bad attachment ${name}`);
+			writeFileSync(join(dir, name), content);
+		}
+		prompt = prompt.replaceAll("{{job_dir}}", dir);
+		spec.addDirs = [...spec.addDirs, dir];
+	}
+	writeFileSync(join(dir, "prompt.md"), prompt);
 	const job = store.createJob(id, spec);
 	if (!parent) return job;
 	// A continued job keeps working in the parent's worktree, so it sees the parent's changes.

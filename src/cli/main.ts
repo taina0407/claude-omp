@@ -87,6 +87,7 @@ Commands:
   run [text...]            start a task; waits until it finishes or needs you (unless --detach)
   continue <job> [text...] new job that resumes a finished job's omp session
   resume <job>             continue a job the daemon was running when it stopped
+  review [target]          read-only review with structured findings (see Review below)
   wait <job...>            block until jobs finish or one needs you (exit 4); --group G
   watch <job...>           stream job events until all jobs end (piped: attention only)
   steer <job> [text...]    redirect a running job mid-flight
@@ -132,6 +133,15 @@ Task options (run, continue):
   -d, --detach          return the job id at once instead of waiting
   --max-wait SECONDS    without --detach: stop waiting after N seconds (exit 3)
   --json                machine-readable output
+
+Review (always read-only; the worker must submit findings through submit_review):
+  omp-task review                    the uncommitted changes (default)
+  omp-task review --staged           the staged changes
+  omp-task review --base main        everything since the merge-base with main
+  omp-task review --commit SHA       one commit
+  omp-task review --job JOB          a worktree job's changes, before you apply them
+  --adversarial  try to break the change    --focus TEXT  what to look at hardest
+  also: -m, -p, -t, --timeout, -C, -g, --budget, -d, --max-wait, --json
 
 Waking up: wait returns (exit 4) only for a question, an approval, an interrupted job, a
 checkpoint the worker reported, or a stalled worker; progress never wakes you.
@@ -349,6 +359,49 @@ const commands: Record<string, Command> = {
 		const client = await connect();
 		const { job } = await client.call<JobView>("POST", `${jobPath(ref)}/resume`, {});
 		return afterStart(client, job, values, "resumed");
+	},
+
+	async review(argv) {
+		const { values, positionals } = parse(argv, {
+			base: { type: "string" },
+			staged: { type: "boolean" },
+			commit: { type: "string" },
+			job: { type: "string" },
+			adversarial: { type: "boolean" },
+			focus: { type: "string" },
+			model: { type: "string", short: "m" },
+			preset: { type: "string", short: "p" },
+			thinking: { type: "string", short: "t" },
+			timeout: { type: "string" },
+			cwd: { type: "string", short: "C" },
+			group: { type: "string", short: "g" },
+			budget: { type: "string" },
+			title: { type: "string" },
+			detach: { type: "boolean", short: "d" },
+			"max-wait": { type: "string" },
+			json: { type: "boolean" },
+		});
+		if (positionals.length)
+			throw new UsageError(`review takes no arguments: ${positionals.join(" ")}`);
+		const picked = (["base", "staged", "commit", "job"] as const).filter((k) => values[k]);
+		if (picked.length > 1) throw new UsageError(`pick one of --${picked.join(", --")}`);
+		const target =
+			values.base !== undefined
+				? { kind: "base", ref: values.base }
+				: values.commit !== undefined
+					? { kind: "commit", ref: values.commit }
+					: values.job !== undefined
+						? { kind: "job", ref: values.job }
+						: { kind: values.staged ? "staged" : "uncommitted" };
+		const { prompt: _, ...options } = jobOptions(values, "-");
+		const client = await connect();
+		const { job } = await client.call<JobView>("POST", "/v1/reviews", {
+			target,
+			mode: values.adversarial ? "adversarial" : "standard",
+			focus: (values.focus as string | undefined) ?? null,
+			options,
+		});
+		return afterStart(client, job, values, "started");
 	},
 
 	async wait(argv) {
