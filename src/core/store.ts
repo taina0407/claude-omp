@@ -4,16 +4,7 @@
  */
 import { Database } from "bun:sqlite";
 import { dbFile } from "./paths";
-import type {
-	ApprovalDecision,
-	CommandKind,
-	CommandResult,
-	FeedEntry,
-	Job,
-	JobSpec,
-	JobStatus,
-	Pending,
-} from "./types";
+import type { FeedEntry, Job, JobSpec, JobStatus, Pending } from "./types";
 import { nowIso } from "./util";
 
 const MIGRATIONS: string[] = [
@@ -84,6 +75,8 @@ const MIGRATIONS: string[] = [
 		result TEXT
 	);
 	CREATE INDEX commands_open ON commands(job_id, handled_at);`,
+	// v1 M2: the daemon hands control commands to runners directly.
+	`DROP TABLE commands;`,
 ];
 
 type Row = Record<string, unknown>;
@@ -126,18 +119,10 @@ function toColumn(key: string, value: unknown): unknown {
 	return value ?? null;
 }
 
-export interface CommandRow {
-	id: number;
-	jobId: string;
-	kind: CommandKind;
-	payload: { message?: string; ref?: string | null; decision?: ApprovalDecision };
-	createdAt: string;
-	handledAt: string | null;
-	result: CommandResult | null;
-}
-
 export class Store {
 	readonly db: Database;
+	/** Called after any change to a job, its feed or its pending items (the daemon wakes waiters). */
+	onChange: (jobId: string) => void = () => {};
 
 	constructor(path = dbFile()) {
 		this.db = new Database(path, { create: true, strict: true });
@@ -239,6 +224,7 @@ export class Store {
 		const sets = keys.map((k) => `${snake(k)} = ?`).join(", ");
 		const values = keys.map((k) => toColumn(snake(k), (fields as Row)[k]));
 		this.db.query(`UPDATE jobs SET ${sets} WHERE id = ?`).run(...(values as never[]), id);
+		this.onChange(id);
 	}
 
 	/** Moves a job to `to` only if it is currently in one of `from`; returns whether it did. */
@@ -247,6 +233,7 @@ export class Store {
 		const res = this.db
 			.query(`UPDATE jobs SET status = ? WHERE id = ? AND status IN (${placeholders})`)
 			.run(to, id, ...from);
+		if (res.changes > 0) this.onChange(id);
 		return res.changes > 0;
 	}
 
@@ -259,16 +246,20 @@ export class Store {
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.run(p.jobId, p.ref, p.kind, p.text, p.tool, JSON.stringify(p.options), p.context, p.askedAt);
+		this.onChange(p.jobId);
 	}
 
 	removePending(jobId: string, ref: string): boolean {
-		return (
-			this.db.query("DELETE FROM pending WHERE job_id = ? AND ref = ?").run(jobId, ref).changes > 0
-		);
+		const removed =
+			this.db.query("DELETE FROM pending WHERE job_id = ? AND ref = ?").run(jobId, ref).changes > 0;
+		if (removed) this.onChange(jobId);
+		return removed;
 	}
 
 	clearPending(jobId: string): void {
-		this.db.query("DELETE FROM pending WHERE job_id = ?").run(jobId);
+		if (this.db.query("DELETE FROM pending WHERE job_id = ?").run(jobId).changes > 0) {
+			this.onChange(jobId);
+		}
 	}
 
 	listPending(jobId: string): Pending[] {
@@ -297,6 +288,7 @@ export class Store {
 				.run(jobId, row.next, ts, kind, text, JSON.stringify(data));
 			return row.next;
 		})();
+		this.onChange(jobId);
 		return { jobId, seq, ts, kind, text, data };
 	}
 
@@ -313,33 +305,5 @@ export class Store {
 			.query("SELECT COALESCE(MAX(seq), 0) AS seq FROM feed WHERE job_id = ?")
 			.get(jobId) as { seq: number };
 		return row.seq;
-	}
-
-	// ---------------------------------------------------------------- control commands
-
-	enqueueCommand(jobId: string, kind: CommandKind, payload: CommandRow["payload"]): number {
-		const res = this.db
-			.query("INSERT INTO commands (job_id, kind, payload, created_at) VALUES (?, ?, ?, ?)")
-			.run(jobId, kind, JSON.stringify(payload), nowIso());
-		return Number(res.lastInsertRowid);
-	}
-
-	openCommands(jobId: string): CommandRow[] {
-		return (
-			this.db
-				.query("SELECT * FROM commands WHERE job_id = ? AND handled_at IS NULL ORDER BY id")
-				.all(jobId) as Row[]
-		).map((r) => fromRow<CommandRow>(r));
-	}
-
-	completeCommand(id: number, result: CommandResult): void {
-		this.db
-			.query("UPDATE commands SET handled_at = ?, result = ? WHERE id = ?")
-			.run(nowIso(), JSON.stringify(result), id);
-	}
-
-	getCommand(id: number): CommandRow | null {
-		const row = this.db.query("SELECT * FROM commands WHERE id = ?").get(id) as Row | null;
-		return row ? fromRow<CommandRow>(row) : null;
 	}
 }

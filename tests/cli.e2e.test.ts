@@ -1,120 +1,35 @@
 /**
  * End-to-end tests for the v1 CLI against the fake omp (tests/fake-omp). Ported from the v0.2
- * suite (tests/test_omp_task.py) plus cases for what the M0 recordings showed.
+ * suite (tests/test_omp_task.py) plus cases for what the M0 recordings showed. Every test gets
+ * its own state dir and so its own daemon.
  */
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Store } from "../src/core/store";
+import { argAfter, type JobJson, type Result, Sandbox } from "./helpers";
 
 setDefaultTimeout(60_000);
 
-const ROOT = join(import.meta.dir, "..");
-const CLI = join(ROOT, "src/cli/main.ts");
-const FAKE = join(import.meta.dir, "fake-omp/fake-omp.ts");
-
-let base: string;
-let repo: string;
+let sb: Sandbox;
 let env: Record<string, string>;
+let base: string;
 
 beforeEach(() => {
-	base = mkdtempSync(join(tmpdir(), "omp-v1-"));
-	repo = join(base, "repo");
-	mkdirSync(repo);
-	Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
-	writeFileSync(join(repo, "existing.txt"), "hi\n");
-	const bin = join(base, "bin");
-	mkdirSync(bin);
-	const fake = join(bin, "omp");
-	writeFileSync(fake, `#!/bin/sh\nexec ${process.execPath} ${FAKE} "$@"\n`);
-	chmodSync(fake, 0o755);
-	env = {
-		...(process.env as Record<string, string>),
-		OMP_TASK_HOME: join(base, "state"),
-		OMP_TASK_CONFIG: join(base, "config.json"),
-		OMP_TASK_OMP_BIN: fake,
-		FAKE_OMP_LOG: join(base, "argv.log"),
-	};
+	sb = new Sandbox();
+	env = sb.env;
+	base = sb.base;
 });
 
-afterEach(() => {
-	rmSync(base, { recursive: true, force: true });
+afterEach(async () => {
+	await sb.dispose();
 });
 
-interface Result {
-	code: number;
-	stdout: string;
-	stderr: string;
-}
-
-async function cli(args: string[], ok: number[] | null = [0]): Promise<Result> {
-	const p = Bun.spawn([process.execPath, CLI, ...args], {
-		cwd: repo,
-		env,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, code] = await Promise.all([
-		new Response(p.stdout).text(),
-		new Response(p.stderr).text(),
-		p.exited,
-	]);
-	if (ok && !ok.includes(code)) {
-		throw new Error(`${args.join(" ")} → exit ${code}\nstdout: ${stdout}\nstderr: ${stderr}`);
-	}
-	return { code, stdout, stderr };
-}
-
-type JobJson = Record<string, unknown> & {
-	id: string;
-	status: string;
-	result: string;
-	errors: string[];
-};
-
-async function runJson(args: string[], ok = [0]): Promise<JobJson> {
-	return JSON.parse((await cli(["run", "--json", ...args], ok)).stdout) as JobJson;
-}
-
-async function start(args: string[]): Promise<string> {
-	return (JSON.parse((await cli(["run", "--detach", "--json", ...args])).stdout) as { id: string })
-		.id;
-}
-
-async function waitJson(job: string, extra: string[] = [], ok = [0, 1]): Promise<JobJson> {
-	const { stdout } = await cli(
-		["wait", job, "--interval", "0.1", "--max-wait", "60", "--json", ...extra],
-		ok,
-	);
-	return JSON.parse(stdout.split("\n\n")[0] as string) as JobJson;
-}
-
-function ompArgv(): string[] {
-	const lines = readFileSync(env.FAKE_OMP_LOG as string, "utf8")
-		.trim()
-		.split("\n");
-	return JSON.parse(lines.at(-1) as string) as string[];
-}
-
-function argAfter(argv: string[], flag: string): string | undefined {
-	const i = argv.indexOf(flag);
-	return i >= 0 ? argv[i + 1] : undefined;
-}
-
-async function waitForStatus(job: string, status: string, timeoutMs = 20_000): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	const store = new Store(join(env.OMP_TASK_HOME as string, "state.db"));
-	try {
-		while (Date.now() < deadline) {
-			if (store.getJob(job)?.status === status) return;
-			await Bun.sleep(50);
-		}
-	} finally {
-		store.close();
-	}
-	throw new Error(`job ${job} never reached ${status}`);
-}
+const cli = (args: string[], ok: number[] | null = [0]): Promise<Result> => sb.cli(args, ok);
+const runJson = (args: string[], ok = [0]): Promise<JobJson> => sb.runJson(args, ok);
+const start = (args: string[]): Promise<string> => sb.start(args);
+const waitJson = (job: string, extra: string[] = [], ok = [0, 1]) => sb.waitJson(job, extra, ok);
+const ompArgv = (): string[] => sb.ompArgv();
+const waitForStatus = (job: string, status: string) => sb.waitForStatus(job, status);
 
 describe("basics", () => {
 	test("run reports result and changed files", async () => {
@@ -295,19 +210,6 @@ describe("housekeeping", () => {
 		const first = await runJson(["hello"]);
 		expect((await cli(["list"])).stdout).toContain(first.id);
 		expect((await cli(["doctor"])).stdout).toContain("omp/0.0.0-fake");
-	});
-
-	test("a job whose runner died is reported as failed", async () => {
-		const job = await start(["SLEEP"]);
-		await waitForStatus(job, "running");
-		const store = new Store(join(env.OMP_TASK_HOME as string, "state.db"));
-		const pid = store.getJob(job)?.runnerPid as number;
-		store.close();
-		process.kill(pid, "SIGKILL");
-		await Bun.sleep(200);
-		const out = await waitJson(job, [], [1]);
-		expect(out.status).toBe("failed");
-		expect(out.errors.join(" ")).toContain("runner exited");
 	});
 
 	test("job ids resolve by unique prefix or suffix", async () => {

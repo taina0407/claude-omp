@@ -1,20 +1,11 @@
-/** Creating jobs, starting their runners, and keeping their records honest. */
-import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
+/** Creating jobs and finding them by (partial) id. */
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getPreset, loadConfig, pickSetting, type Settings } from "./config";
-import { CLI_ENTRY, jobDir } from "./paths";
+import { jobDir } from "./paths";
 import type { Store } from "./store";
-import { ACCESS_LEVELS, type Access, isActive, type Job, type JobSpec } from "./types";
-import {
-	firstLine,
-	newJobId,
-	nowIso,
-	parseDuration,
-	pidAlive,
-	shellSplit,
-	UsageError,
-} from "./util";
+import { ACCESS_LEVELS, type Access, type Job, type JobSpec } from "./types";
+import { firstLine, newJobId, parseDuration, shellSplit, UsageError } from "./util";
 
 export interface JobOptions {
 	prompt: string;
@@ -25,7 +16,10 @@ export interface JobOptions {
 	timeout?: string | undefined;
 	answerTimeout?: string | undefined;
 	approvalTimeout?: string | undefined;
+	/** Absolute; defaults to the parent's cwd for `continue`, then to `clientCwd`. */
 	cwd?: string | undefined;
+	/** The CLI's working directory (the daemon runs elsewhere). */
+	clientCwd: string;
 	addDirs?: string[] | undefined;
 	files?: string[] | undefined;
 	title?: string | undefined;
@@ -67,7 +61,7 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 	if (!ACCESS_LEVELS.includes(access as Access)) {
 		throw new UsageError(`access must be one of ${ACCESS_LEVELS.join(", ")}`);
 	}
-	const cwd = resolve(opts.cwd ?? parent?.cwd ?? process.cwd());
+	const cwd = resolve(opts.clientCwd, opts.cwd ?? parent?.cwd ?? ".");
 	if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
 		throw new UsageError(`cwd does not exist: ${cwd}`);
 	}
@@ -80,8 +74,8 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 		timeoutS: parseDuration(pick("timeout", opts.timeout, "30m")),
 		answerTimeoutS: parseDuration(pick("answer_timeout", opts.answerTimeout, "20m")),
 		approvalTimeoutS: parseDuration(pick("approval_timeout", opts.approvalTimeout, "20m")),
-		addDirs: (opts.addDirs ?? []).map((d) => resolve(d)),
-		files: (opts.files ?? []).map((f) => resolve(f)),
+		addDirs: (opts.addDirs ?? []).map((d) => resolve(opts.clientCwd, d)),
+		files: (opts.files ?? []).map((f) => resolve(opts.clientCwd, f)),
 		extraArgs: shellSplit(pick("omp_args", opts.ompArgs, "") ?? ""),
 		noPreamble: Boolean(opts.noPreamble),
 		parentId: parent?.id ?? null,
@@ -93,47 +87,13 @@ export function createJob(store: Store, opts: JobOptions, parent: Job | null = n
 	return store.createJob(id, spec);
 }
 
-/** Starts the detached runner process for a queued job; returns its pid. */
-export function spawnRunner(store: Store, job: Job): number {
-	const log = openSync(join(jobDir(job.id), "runner.log"), "a");
-	const child = spawn(process.execPath, [CLI_ENTRY, "_run", job.id], {
-		detached: true,
-		stdio: ["ignore", log, log],
-		env: process.env,
-	});
-	closeSync(log);
-	child.unref();
-	const pid = child.pid ?? 0;
-	store.updateJob(job.id, { status: "starting", runnerPid: pid });
-	return pid;
-}
-
-/** A job whose runner died without finishing it is reported as failed (v0.2 behaviour). */
-export function refreshStatus(store: Store, job: Job): Job {
-	if (isActive(job.status) && job.status !== "queued" && !pidAlive(job.runnerPid)) {
-		// The runner may have finished between our read and the pid check.
-		const latest = store.getJob(job.id) ?? job;
-		if (!isActive(latest.status)) return latest;
-		store.clearPending(job.id);
-		store.updateJob(job.id, {
-			status: "failed",
-			finishedAt: nowIso(),
-			errors: [...latest.errors, "runner exited without recording a result"].slice(-5),
-			runnerPid: null,
-		});
-		store.appendFeed(job.id, "done", "failed", {
-			changed_files: latest.changedFiles,
-			cost_usd: latest.costUsd,
-		});
-		return store.getJob(job.id) as Job;
-	}
-	return job;
-}
+export class NotFoundError extends UsageError {}
 
 export function resolveJob(store: Store, idPart: string): Job {
 	const ids = store.findJobIds(idPart);
-	if (ids.length === 0) throw new UsageError(`no job matching '${idPart}'`);
-	if (ids.length > 1)
+	if (ids.length === 0) throw new NotFoundError(`no job matching '${idPart}'`);
+	if (ids.length > 1) {
 		throw new UsageError(`'${idPart}' is ambiguous: ${ids.slice(0, 5).join(", ")}`);
-	return refreshStatus(store, store.getJob(ids[0] as string) as Job);
+	}
+	return store.getJob(ids[0] as string) as Job;
 }

@@ -24,6 +24,10 @@ export type Settings = z.infer<typeof settings>;
 const configSchema = z.looseObject({
 	defaults: settings.optional(),
 	presets: z.record(z.string(), settings).optional(),
+	/** Resume jobs the daemon was running when it stopped, as soon as it starts again. */
+	auto_resume: z.boolean().optional(),
+	/** Stop the daemon after this long with no jobs and no clients (default 15m). */
+	daemon_idle_timeout: duration.optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

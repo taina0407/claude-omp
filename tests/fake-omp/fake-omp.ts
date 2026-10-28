@@ -11,11 +11,13 @@
  *   NOTIFY        notify_orchestrator
  *   SUBAGENT      report one subagent that costs $0.002
  *   SLEEP         idle up to 30s; `steer` ends it early, `abort` ends the run as aborted
+ *   SLOWSTART     take 3s to accept the prompt (the session is not saved until then)
  *   ERROR         the final message has stopReason "error"
  *   FAIL          exit 1 with an error on stderr
- * Records its argv to $FAKE_OMP_LOG when set.
+ * Records its argv to $FAKE_OMP_LOG when set. With FAKE_OMP_IGNORE_EOF it keeps running after
+ * stdin closes, as real omp does in the middle of a turn.
  */
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 type Frame = Record<string, unknown>;
 
@@ -27,6 +29,15 @@ if (argv[0] === "--version") {
 }
 const resumeAt = argv.indexOf("--resume");
 const session = resumeAt >= 0 ? (argv[resumeAt + 1] as string) : crypto.randomUUID();
+
+// Like omp, a session is saved once a prompt has been accepted; resuming an unsaved one fails.
+const sessionsFile = process.env.FAKE_OMP_SESSIONS;
+const savedSessions = () =>
+	sessionsFile && existsSync(sessionsFile) ? readFileSync(sessionsFile, "utf8").split("\n") : [];
+if (resumeAt >= 0 && sessionsFile && !savedSessions().includes(session)) {
+	process.stderr.write(`Error: Session "${session}" not found.\n`);
+	process.exit(1);
+}
 
 function emit(frame: Frame): void {
 	process.stdout.write(`${JSON.stringify(frame)}\n`);
@@ -63,7 +74,8 @@ async function waitFor(pred: (f: Frame) => boolean, timeoutMs = 30_000): Promise
 	while (Date.now() < deadline) {
 		const i = inbox.findIndex(pred);
 		if (i >= 0) return inbox.splice(i, 1)[0] as Frame;
-		if (stdinClosed) process.exit(0);
+		// Real omp keeps working on its turn after stdin closes; FAKE_OMP_IGNORE_EOF mimics that.
+		if (stdinClosed && !process.env.FAKE_OMP_IGNORE_EOF) process.exit(0);
 		await new Promise<void>((resolve) => {
 			wake.fn = resolve;
 			setTimeout(resolve, 50);
@@ -83,7 +95,13 @@ function respond(f: Frame, data?: unknown): void {
 
 async function runPrompt(prompt: Frame): Promise<void> {
 	const text = String(prompt.message);
+	if (text.includes("SLOWSTART")) {
+		await Bun.sleep(3_000); // omp can sit on a prompt for a while before it takes it
+		if (stdinClosed) process.exit(0);
+	}
 	respond(prompt);
+	if (sessionsFile && !savedSessions().includes(session))
+		appendFileSync(sessionsFile, `${session}\n`);
 	emit({ type: "agent_start" });
 	if (text.includes("FAIL")) {
 		process.stderr.write("boom: provider error\n");

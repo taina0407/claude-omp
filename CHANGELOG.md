@@ -2,6 +2,25 @@
 
 ## Unreleased: v1
 
+### M2: per-user daemon
+
+- A daemon now owns the job database and runs every job. The CLI talks to it over HTTP on a
+  unix socket (one daemon per state dir) and starts it on demand; concurrent CLIs on a cold start
+  still end up with exactly one daemon (`O_EXCL` lock file plus pid check).
+- `wait` long-polls and `watch` streams server-sent events, so neither polls the database.
+- Crash recovery: jobs the daemon was running when it died or was stopped become `interrupted`.
+  `omp-task resume <job>` continues the job in its omp session under the same job id (omp's
+  `--restore` does not work in RPC mode); if omp had not saved the session yet, the job starts
+  over. With `"auto_resume": true` in the config the daemon resumes them by itself. `wait`
+  returns exit 4 for an interrupted job; `cancel` gives it up.
+- omp keeps working on its turn after its stdin closes, so on recovery the daemon stops a worker
+  that outlived its daemon before anyone resumes the session.
+- Cost, tokens and tool counts are saved as they change, so an interruption loses none of them.
+- The daemon stops after 15 minutes with no jobs and no clients (`daemon_idle_timeout`), and
+  restarts by itself when idle and the CLI is a different version.
+- New commands: `resume`, `daemon` (foreground), `daemon status`, `daemon stop [--force]`.
+  `doctor` shows the daemon. New exit code 5: the daemon could not be started or reached.
+
 ### M1: core and omp-rpc backend
 
 - `src/cli/main.ts`: the v1 `omp-task` CLI with every v0.2 command (`run`, `continue`, `wait`,

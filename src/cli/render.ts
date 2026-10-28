@@ -100,6 +100,12 @@ export function emitJob(job: Job, pending: Pending[], asJson: boolean, full = fa
 	}
 	if (job.deniedTools.length) out(`- denied: ${job.deniedTools.join(", ")}`);
 	for (const e of job.errors) out(`- error: ${e}`);
+	if (job.status === "interrupted") {
+		out();
+		out(`INTERRUPTED: the omp-task daemon stopped while this job ran.`);
+		out(`  continue it: omp-task resume ${job.id}    or give up: omp-task cancel ${job.id}`);
+		return;
+	}
 	if (pending.length) {
 		out();
 		printPending(job.id, pending);

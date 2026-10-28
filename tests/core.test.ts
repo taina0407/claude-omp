@@ -141,13 +141,25 @@ describe("Store", () => {
 		});
 	});
 
-	test("commands are queued, handled once, and carry their result", () => {
+	test("onChange fires for every job, feed and pending mutation", () => {
 		withStore((s) => {
-			const id = s.enqueueCommand("a", "reply", { message: "blue", ref: null });
-			expect(s.openCommands("a").map((c) => c.payload.message)).toEqual(["blue"]);
-			s.completeCommand(id, { ok: true, ref: "q1" });
-			expect(s.openCommands("a")).toHaveLength(0);
-			expect(s.getCommand(id)?.result).toEqual({ ok: true, ref: "q1" });
+			const seen: string[] = [];
+			s.onChange = (id) => seen.push(id);
+			s.createJob("20260101-000000-abcd", spec);
+			s.updateJob("20260101-000000-abcd", { status: "running" });
+			s.appendFeed("20260101-000000-abcd", "started");
+			s.addPending({
+				jobId: "20260101-000000-abcd",
+				ref: "q1",
+				kind: "question",
+				text: "?",
+				tool: null,
+				options: [],
+				context: null,
+				askedAt: "now",
+			});
+			s.removePending("20260101-000000-abcd", "q1");
+			expect(seen).toEqual(Array(4).fill("20260101-000000-abcd"));
 		});
 	});
 });

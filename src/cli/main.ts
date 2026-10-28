@@ -1,37 +1,39 @@
 #!/usr/bin/env bun
 /**
  * omp-task: delegate coding tasks to the omp (oh-my-pi) agent and supervise them live.
+ * Every command talks to the per-user daemon, which it starts when needed.
  *
  * Exit codes: 0 completed, 1 failed/cancelled/timeout, 2 usage error, 3 --max-wait expired,
- * 4 a job is waiting for an answer or approval.
+ * 4 a job needs the orchestrator (a question, an approval, or an interrupted job to resume),
+ * 5 the daemon could not be started or reached.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
+import type { ControlResponse, Health, JobView, WaitResponse } from "../api/schema";
 import { loadConfig } from "../core/config";
-import { createJob, type JobOptions, refreshStatus, resolveJob, spawnRunner } from "../core/jobs";
-import { configFile, ompBin, PREAMBLE_FILE, stateDir } from "../core/paths";
-import { JobRunner } from "../core/runner";
-import { Store } from "../core/store";
+import type { JobOptions } from "../core/jobs";
+import { configFile, ompBin, PREAMBLE_FILE, socketPath, stateDir } from "../core/paths";
 import {
-	ACTIVE_STATUSES,
+	ALL_STATUSES,
 	type ApprovalDecision,
-	type CommandKind,
-	type CommandResult,
+	type ControlRequest,
 	isTerminal,
 	type Job,
-	TERMINAL_STATUSES,
 } from "../core/types";
-import { errorText, pidAlive, UsageError } from "../core/util";
+import { errorText, UsageError } from "../core/util";
+import { runDaemon } from "../daemon/server";
+import { VERSION } from "../version";
+import { type Client, connect, DaemonError, existingDaemon } from "./client";
 import { emitJob, formatFeed, out } from "./render";
 
-export const VERSION = "1.0.0-alpha.0";
-
 const EXIT_FAILED = 1;
+const EXIT_USAGE = 2;
 const EXIT_MAX_WAIT = 3;
 const EXIT_ATTENTION = 4;
-/** How long a control command waits for the runner to pick it up. */
-const CONTROL_TIMEOUT_MS = 15_000;
+const EXIT_DAEMON = 5;
+/** One long-poll request; the CLI asks again until its own --max-wait. */
+const LONG_POLL_S = 25;
 
 type Values = Record<string, string | boolean | string[] | undefined>;
 
@@ -64,7 +66,8 @@ Usage: omp-task <command> [options]
 Commands:
   run [text...]            start a task; waits until it finishes or needs you (unless --detach)
   continue <job> [text...] new job that resumes a finished job's omp session
-  wait <job...>            block until jobs finish or one needs an answer/approval (exit 4)
+  resume <job>             continue a job the daemon was running when it stopped
+  wait <job...>            block until jobs finish or one needs you (exit 4)
   watch <job...>           stream one line per job event until all jobs end (for Monitor)
   steer <job> [text...]    redirect a running job mid-flight
   reply <job> [text...]    answer a running job's question (--ref to pick one)
@@ -73,7 +76,8 @@ Commands:
   status <job>             show a job's state
   result <job>             print a job's result (--full, --json)
   list                     list recent jobs (-n, -C, --status, --json)
-  doctor                   check the omp install and configuration
+  doctor                   check the omp install, the daemon and the configuration
+  daemon [status|stop]     run the daemon in the foreground, show it, or stop it (--force)
 
 Task options (run, continue):
   -b, --brief FILE      read the task from a file ('-' for stdin)
@@ -95,7 +99,7 @@ Task options (run, continue):
   --json                machine-readable output
 
 Exit codes: 0 completed, 1 failed/cancelled/timeout, 2 usage error, 3 --max-wait expired,
-4 a job is waiting for an answer or approval.`;
+4 a job needs you (question, approval, or interrupted), 5 the daemon is unavailable.`;
 
 function parse(
 	argv: string[],
@@ -134,213 +138,190 @@ function readText(values: Values, positionals: string[]): string {
 }
 
 function jobOptions(values: Values, prompt: string): JobOptions {
-	return {
-		prompt,
-		model: values.model as string | undefined,
-		preset: values.preset as string | undefined,
-		access: values.access as string | undefined,
-		thinking: values.thinking as string | undefined,
-		timeout: values.timeout as string | undefined,
-		answerTimeout: values["answer-timeout"] as string | undefined,
-		approvalTimeout: values["approval-timeout"] as string | undefined,
-		cwd: values.cwd as string | undefined,
-		addDirs: values["add-dir"] as string[] | undefined,
-		files: values.file as string[] | undefined,
-		title: values.title as string | undefined,
-		ompArgs: values["omp-args"] as string | undefined,
-		noPreamble: values["no-preamble"] as boolean | undefined,
-	};
+	const opts: JobOptions = { prompt, clientCwd: process.cwd() };
+	const str = (k: string) => values[k] as string | undefined;
+	if (str("model")) opts.model = str("model");
+	if (str("preset")) opts.preset = str("preset");
+	if (str("access")) opts.access = str("access");
+	if (str("thinking")) opts.thinking = str("thinking");
+	if (str("timeout")) opts.timeout = str("timeout");
+	if (str("answer-timeout")) opts.answerTimeout = str("answer-timeout");
+	if (str("approval-timeout")) opts.approvalTimeout = str("approval-timeout");
+	if (str("cwd")) opts.cwd = resolve(str("cwd") as string);
+	if (values["add-dir"]) opts.addDirs = values["add-dir"] as string[];
+	if (values.file) opts.files = values.file as string[];
+	if (str("title")) opts.title = str("title");
+	if (str("omp-args")) opts.ompArgs = str("omp-args");
+	if (values["no-preamble"]) opts.noPreamble = true;
+	return opts;
+}
+
+const jobPath = (ref: string) => `/v1/jobs/${encodeURIComponent(ref)}`;
+
+async function getJob(client: Client, ref: string): Promise<JobView> {
+	return client.call<JobView>("GET", jobPath(ref));
 }
 
 // ---------------------------------------------------------------- waiting
 
 async function waitJobs(
-	store: Store,
+	client: Client,
 	ids: string[],
-	opts: { intervalS: number; maxWaitS: number | undefined; json: boolean; attention: boolean },
+	opts: { maxWaitS: number | undefined; json: boolean; attention: boolean },
 ): Promise<number> {
-	const deadline = opts.maxWaitS ? performance.now() + opts.maxWaitS * 1000 : null;
-	let jobs: Job[] = [];
+	const deadline = opts.maxWaitS !== undefined ? performance.now() + opts.maxWaitS * 1000 : null;
 	while (true) {
-		jobs = ids.map((id) => refreshStatus(store, store.getJob(id) as Job));
-		if (opts.attention) {
-			const needs = jobs.filter((j) => store.listPending(j.id).length > 0);
-			if (needs.length) {
-				for (const j of needs) {
-					emitJob(j, store.listPending(j.id), opts.json);
-					out();
-				}
-				for (const j of jobs.filter((x) => !needs.includes(x))) out(`(job ${j.id} is ${j.status})`);
-				return EXIT_ATTENTION;
+		const remaining = deadline === null ? LONG_POLL_S : (deadline - performance.now()) / 1000;
+		const q = new URLSearchParams({
+			ids: ids.join(","),
+			attention: opts.attention ? "1" : "0",
+			timeout: String(Math.max(0, Math.min(LONG_POLL_S, remaining))),
+		});
+		const res = await client.call<WaitResponse>("GET", `/v1/wait?${q}`);
+		if (res.reason === "attention") {
+			const needs = res.jobs.filter((v) => v.pending.length || v.job.status === "interrupted");
+			for (const v of needs) {
+				emitJob(v.job, v.pending, opts.json);
+				out();
 			}
+			for (const v of res.jobs.filter((x) => !needs.includes(x))) {
+				out(`(job ${v.job.id} is ${v.job.status})`);
+			}
+			return EXIT_ATTENTION;
 		}
-		if (jobs.every((j) => isTerminal(j.status))) break;
-		if (deadline && performance.now() > deadline) {
-			for (const j of jobs) out(`${j.id} ${j.status}`);
+		if (res.reason === "done") {
+			for (const v of res.jobs) {
+				emitJob(v.job, [], opts.json);
+				out();
+			}
+			return res.jobs.every((v) => v.job.status === "completed") ? 0 : EXIT_FAILED;
+		}
+		if (deadline !== null && performance.now() >= deadline) {
+			for (const v of res.jobs) out(`${v.job.id} ${v.job.status}`);
 			return EXIT_MAX_WAIT;
 		}
-		await Bun.sleep(opts.intervalS * 1000);
 	}
-	for (const j of jobs) {
-		emitJob(j, [], opts.json);
-		out();
-	}
-	return jobs.every((j) => j.status === "completed") ? 0 : EXIT_FAILED;
 }
 
-async function launch(store: Store, job: Job, values: Values): Promise<number> {
-	const pid = spawnRunner(store, job);
+async function afterStart(client: Client, job: Job, values: Values, verb: string): Promise<number> {
 	if (values.detach) {
-		if (values.json) out(JSON.stringify({ id: job.id, status: "starting", pid }));
+		if (values.json) out(JSON.stringify({ id: job.id, status: job.status }));
 		else {
-			out(`job ${job.id} started (runner pid ${pid})`);
+			out(`job ${job.id} ${verb}`);
 			out(`  wake me when it needs me: omp-task wait ${job.id}   (run it in the background)`);
 			out(`  live feed for Monitor:    omp-task watch ${job.id}`);
 		}
 		return 0;
 	}
-	return waitJobs(store, [job.id], {
-		intervalS: 0.5,
+	return waitJobs(client, [job.id], {
 		maxWaitS: num(values["max-wait"], "--max-wait"),
 		json: Boolean(values.json),
 		attention: true,
 	});
 }
 
-// ---------------------------------------------------------------- control
-
-async function control(
-	store: Store,
-	job: Job,
-	kind: CommandKind,
-	payload: { message?: string; ref?: string | null; decision?: ApprovalDecision },
-): Promise<CommandResult> {
-	if (isTerminal(job.status)) throw new UsageError(`job ${job.id} is ${job.status}, not running`);
-	const id = store.enqueueCommand(job.id, kind, payload);
-	const deadline = performance.now() + CONTROL_TIMEOUT_MS;
-	while (performance.now() < deadline) {
-		const cmd = store.getCommand(id);
-		if (cmd?.result) return cmd.result;
-		await Bun.sleep(50);
-	}
-	return { ok: false, error: "the job's runner did not respond" };
-}
-
-function reportControl(result: CommandResult, okText: string): number {
-	out(result.ok ? okText : `error: ${result.error}`);
-	return result.ok ? 0 : EXIT_FAILED;
+async function control(client: Client, ref: string, req: ControlRequest): Promise<number> {
+	const res = await client.call<ControlResponse>("POST", `${jobPath(ref)}/control`, req);
+	const okText =
+		req.kind === "steer"
+			? "steer sent"
+			: req.kind === "reply"
+				? "answer sent"
+				: `${req.decision ?? "approve"} sent`;
+	out(res.ok ? okText : `error: ${res.error}`);
+	return res.ok ? 0 : EXIT_FAILED;
 }
 
 // ---------------------------------------------------------------- commands
 
-type Command = (store: Store, argv: string[]) => Promise<number> | number;
+type Command = (argv: string[]) => Promise<number>;
 
 const commands: Record<string, Command> = {
-	async run(store, argv) {
+	async run(argv) {
 		const { values, positionals } = parse(argv, TASK_OPTIONS);
-		const job = createJob(store, jobOptions(values, readText(values, positionals)));
-		return launch(store, job, values);
+		const options = jobOptions(values, readText(values, positionals));
+		const client = await connect();
+		const { job } = await client.call<JobView>("POST", "/v1/jobs", { options });
+		return afterStart(client, job, values, "started");
 	},
 
-	async continue(store, argv) {
+	async continue(argv) {
 		const { values, positionals } = parse(argv, TASK_OPTIONS);
-		const [ref, ...rest] = positionals;
-		if (!ref) throw new UsageError("continue needs a job id");
-		const parent = resolveJob(store, ref);
-		if (!isTerminal(parent.status)) {
-			throw new UsageError(
-				`job ${parent.id} is still ${parent.status}; use steer/reply/approve, or wait for it`,
-			);
-		}
-		if (!parent.sessionId) throw new UsageError(`job ${parent.id} has no omp session to continue`);
-		const job = createJob(store, jobOptions(values, readText(values, rest)), parent);
-		return launch(store, job, values);
+		const [parent, ...rest] = positionals;
+		if (!parent) throw new UsageError("continue needs a job id");
+		const options = jobOptions(values, readText(values, rest));
+		const client = await connect();
+		const { job } = await client.call<JobView>("POST", "/v1/jobs", { options, parent });
+		return afterStart(client, job, values, "started");
 	},
 
-	async wait(store, argv) {
+	async resume(argv) {
 		const { values, positionals } = parse(argv, {
-			interval: { type: "string" },
+			detach: { type: "boolean", short: "d" },
+			"max-wait": { type: "string" },
+			json: { type: "boolean" },
+		});
+		const [ref] = positionals;
+		if (!ref) throw new UsageError("resume needs a job id");
+		const client = await connect();
+		const { job } = await client.call<JobView>("POST", `${jobPath(ref)}/resume`, {});
+		return afterStart(client, job, values, "resumed");
+	},
+
+	async wait(argv) {
+		const { values, positionals } = parse(argv, {
+			interval: { type: "string" }, // accepted for v0.2 compatibility; waiting is push-based now
 			"max-wait": { type: "string" },
 			"no-attention": { type: "boolean" },
 			json: { type: "boolean" },
 		});
 		if (!positionals.length) throw new UsageError("wait needs at least one job id");
-		const ids = positionals.map((p) => resolveJob(store, p).id);
-		return waitJobs(store, ids, {
-			intervalS: num(values.interval, "--interval") ?? 1,
+		const client = await connect();
+		const ids = await Promise.all(positionals.map(async (p) => (await getJob(client, p)).job.id));
+		return waitJobs(client, ids, {
 			maxWaitS: num(values["max-wait"], "--max-wait"),
 			json: Boolean(values.json),
 			attention: !values["no-attention"],
 		});
 	},
 
-	async watch(store, argv) {
+	async watch(argv) {
 		const { values, positionals } = parse(argv, {
 			"from-start": { type: "boolean" },
 			quiet: { type: "boolean", short: "q" },
-			interval: { type: "string" },
+			interval: { type: "string" }, // accepted for v0.2 compatibility
 		});
 		if (!positionals.length) throw new UsageError("watch needs at least one job id");
-		const ids = positionals.map((p) => resolveJob(store, p).id);
-		const interval = (num(values.interval, "--interval") ?? 0.5) * 1000;
 		const hidden = new Set(values.quiet ? ["tool", "progress", "steer", "subagent"] : []);
-		const seq = new Map<string, number>();
-		for (const id of ids) {
-			seq.set(id, values["from-start"] ? 0 : store.lastFeedSeq(id));
-			if (!values["from-start"]) {
-				// Surface anything already waiting on us, so a late watcher does not miss it.
-				for (const p of store.listPending(id)) {
-					out(
-						formatFeed({
-							jobId: id,
-							ts: p.askedAt,
-							kind: p.kind,
-							text: p.text,
-							data: { options: p.options },
-						}),
-					);
-				}
-			}
+		const client = await connect();
+		for await (const event of client.feed(positionals, Boolean(values["from-start"]))) {
+			if (event.type === "end") return 0;
+			if (!hidden.has(event.entry.kind)) out(formatFeed(event.entry));
 		}
-		while (true) {
-			for (const id of ids) {
-				for (const e of store.feedSince(id, seq.get(id) ?? 0)) {
-					seq.set(id, e.seq);
-					if (!hidden.has(e.kind)) out(formatFeed(e));
-				}
-			}
-			const jobs = ids.map((id) => refreshStatus(store, store.getJob(id) as Job));
-			if (jobs.every((j) => isTerminal(j.status))) {
-				// Drain once more: the done line may have landed after the last read.
-				if (ids.every((id) => (seq.get(id) ?? 0) >= store.lastFeedSeq(id))) return 0;
-				continue;
-			}
-			await Bun.sleep(interval);
-		}
+		return 0;
 	},
 
-	async steer(store, argv) {
+	async steer(argv) {
 		const { values, positionals } = parse(argv, MESSAGE_OPTIONS);
 		const [ref, ...rest] = positionals;
 		if (!ref) throw new UsageError("steer needs a job id");
-		const job = resolveJob(store, ref);
-		const result = await control(store, job, "steer", { message: readText(values, rest) });
-		return reportControl(result, "steer sent");
+		const message = readText(values, rest);
+		return control(await connect(), ref, { kind: "steer", message });
 	},
 
-	async reply(store, argv) {
+	async reply(argv) {
 		const { values, positionals } = parse(argv, { ...MESSAGE_OPTIONS, ref: { type: "string" } });
 		const [ref, ...rest] = positionals;
 		if (!ref) throw new UsageError("reply needs a job id");
-		const job = resolveJob(store, ref);
-		const result = await control(store, job, "reply", {
-			message: readText(values, rest),
+		const message = readText(values, rest);
+		return control(await connect(), ref, {
+			kind: "reply",
+			message,
 			ref: (values.ref as string | undefined) ?? null,
 		});
-		return reportControl(result, "answer sent");
 	},
 
-	async approve(store, argv) {
+	async approve(argv) {
 		const { values, positionals } = parse(argv, {
 			session: { type: "boolean" },
 			deny: { type: "boolean" },
@@ -354,52 +335,36 @@ const commands: Record<string, Command> = {
 			: values.session
 				? "session"
 				: "approve";
-		const job = resolveJob(store, ref);
-		const result = await control(store, job, "approve", {
+		return control(await connect(), ref, {
+			kind: "approve",
 			decision,
 			ref: (values.ref as string | undefined) ?? null,
 		});
-		return reportControl(result, `${decision} sent`);
 	},
 
-	async cancel(store, argv) {
+	async cancel(argv) {
 		const { positionals } = parse(argv, {});
 		const [ref] = positionals;
 		if (!ref) throw new UsageError("cancel needs a job id");
-		const job = resolveJob(store, ref);
+		const client = await connect();
+		const { job } = await getJob(client, ref);
 		if (isTerminal(job.status)) {
 			out(`job ${job.id} already ${job.status}`);
 			return 0;
 		}
-		const result = await control(store, job, "abort", {});
-		if (result.ok) {
-			out(`cancel requested for job ${job.id}`);
-			return 0;
-		}
-		// The runner is unresponsive: stop its process group (omp included) directly.
-		for (const pid of [job.runnerPid, job.ompPid]) {
-			if (!pidAlive(pid)) continue;
-			try {
-				process.kill(-(pid as number), "SIGTERM");
-			} catch {
-				try {
-					process.kill(pid as number, "SIGTERM");
-				} catch {
-					// already gone
-				}
-			}
-		}
-		out(`job ${job.id} killed`);
-		return 0;
+		const res = await client.call<ControlResponse>("POST", `${jobPath(job.id)}/control`, {
+			kind: "abort",
+		});
+		out(res.ok ? `cancel requested for job ${job.id}` : `error: ${res.error}`);
+		return res.ok ? 0 : EXIT_FAILED;
 	},
 
-	status(store, argv) {
+	async status(argv) {
 		const { values, positionals } = parse(argv, { json: { type: "boolean" } });
 		const [ref] = positionals;
 		if (!ref) throw new UsageError("status needs a job id");
-		const job = resolveJob(store, ref);
-		const pending = store.listPending(job.id);
-		if (isTerminal(job.status) || pending.length) {
+		const { job, pending } = await getJob(await connect(), ref);
+		if (isTerminal(job.status) || job.status === "interrupted" || pending.length) {
 			emitJob(job, pending, Boolean(values.json));
 			return 0;
 		}
@@ -412,6 +377,7 @@ const commands: Record<string, Command> = {
 						title: job.title,
 						started_at: job.startedAt,
 						tools_so_far: job.tools,
+						cost_usd_so_far: job.costUsd,
 						session_id: job.sessionId,
 					},
 					null,
@@ -427,19 +393,19 @@ const commands: Record<string, Command> = {
 		return 0;
 	},
 
-	result(store, argv) {
+	async result(argv) {
 		const { values, positionals } = parse(argv, {
 			full: { type: "boolean" },
 			json: { type: "boolean" },
 		});
 		const [ref] = positionals;
 		if (!ref) throw new UsageError("result needs a job id");
-		const job = resolveJob(store, ref);
-		emitJob(job, store.listPending(job.id), Boolean(values.json), Boolean(values.full));
+		const { job, pending } = await getJob(await connect(), ref);
+		emitJob(job, pending, Boolean(values.json), Boolean(values.full));
 		return 0;
 	},
 
-	list(store, argv) {
+	async list(argv) {
 		const { values } = parse(argv, {
 			limit: { type: "string", short: "n" },
 			cwd: { type: "string", short: "C" },
@@ -447,20 +413,17 @@ const commands: Record<string, Command> = {
 			json: { type: "boolean" },
 		});
 		const status = values.status as string | undefined;
-		const known = [...ACTIVE_STATUSES, ...TERMINAL_STATUSES] as string[];
-		if (status && !known.includes(status)) {
-			throw new UsageError(`--status must be one of ${known.join(", ")}`);
+		if (status && !(ALL_STATUSES as readonly string[]).includes(status)) {
+			throw new UsageError(`--status must be one of ${ALL_STATUSES.join(", ")}`);
 		}
-		const opts: { limit: number; cwd?: string; status?: string } = {
-			limit: num(values.limit, "--limit") ?? 20,
-		};
-		if (values.cwd) opts.cwd = resolve(values.cwd as string);
-		if (status) opts.status = status;
-		const rows = store.listJobs(opts).map((j) => refreshStatus(store, j));
+		const q = new URLSearchParams({ limit: String(num(values.limit, "--limit") ?? 20) });
+		if (values.cwd) q.set("cwd", resolve(values.cwd as string));
+		if (status) q.set("status", status);
+		const { jobs } = await (await connect()).call<{ jobs: Job[] }>("GET", `/v1/jobs?${q}`);
 		if (values.json) {
 			out(
 				JSON.stringify(
-					rows.map((j) => ({
+					jobs.map((j) => ({
 						id: j.id,
 						status: j.status,
 						title: j.title,
@@ -475,40 +438,73 @@ const commands: Record<string, Command> = {
 			);
 			return 0;
 		}
-		for (const j of rows)
-			out(`${j.id}  ${j.status.padEnd(9)}  ${j.title.slice(0, 60)}  [${j.cwd}]`);
-		if (!rows.length) out("(no jobs)");
+		for (const j of jobs)
+			out(`${j.id}  ${j.status.padEnd(11)}  ${j.title.slice(0, 60)}  [${j.cwd}]`);
+		if (!jobs.length) out("(no jobs)");
 		return 0;
 	},
 
-	doctor() {
+	async doctor() {
 		const bin = ompBin();
 		out(`omp binary:   ${bin ?? "NOT FOUND"}`);
 		if (bin) {
 			const p = Bun.spawnSync([bin, "--version"], { stdout: "pipe", stderr: "ignore" });
 			out(`omp version:  ${p.stdout.toString().trim()}`);
 		}
-		out(`bun:          ${Bun.version}`);
+		out(`omp-task:     ${VERSION} (bun ${Bun.version})`);
 		out(`state dir:    ${stateDir()}`);
+		const daemon = await existingDaemon();
+		out(
+			`daemon:       ${
+				daemon
+					? `running, pid ${daemon.health.pid}, ${daemon.health.version}, ${daemon.health.activeJobs} active job(s)`
+					: "not running (starts on demand)"
+			}`,
+		);
+		out(`socket:       ${socketPath()}`);
 		const cfg = configFile();
-		const present = existsSync(cfg);
-		out(`config:       ${cfg} (${present ? "present" : "absent, using defaults"})`);
+		out(`config:       ${cfg} (${existsSync(cfg) ? "present" : "absent, using defaults"})`);
 		const presets = Object.keys(loadConfig().presets ?? {});
 		if (presets.length) out(`presets:      ${presets.join(", ")}`);
-		const preamble = existsSync(PREAMBLE_FILE);
-		out(`preamble:     ${PREAMBLE_FILE} (${preamble ? "ok" : "missing"})`);
+		out(`preamble:     ${PREAMBLE_FILE} (${existsSync(PREAMBLE_FILE) ? "ok" : "missing"})`);
 		return bin ? 0 : EXIT_FAILED;
 	},
 
-	/** Internal: the detached runner for one job. */
-	async _run(store, argv) {
-		const [id] = argv;
-		if (!id) throw new UsageError("_run needs a job id");
-		const runner = new JobRunner(store, id);
-		process.on("SIGTERM", () => runner.cancel());
-		process.on("SIGINT", () => runner.cancel());
-		await runner.run();
-		return 0;
+	async daemon(argv) {
+		const { values, positionals } = parse(argv, {
+			force: { type: "boolean" },
+			json: { type: "boolean" },
+		});
+		const [sub] = positionals;
+		if (!sub) {
+			if (!(await runDaemon())) {
+				process.stderr.write("omp-task: a daemon already serves this state dir\n");
+			}
+			return 0;
+		}
+		const daemon = await existingDaemon();
+		if (sub === "status") {
+			if (values.json) out(JSON.stringify(daemon?.health ?? { ok: false }, null, 2));
+			else if (daemon) {
+				const h: Health = daemon.health;
+				out(
+					`running: pid ${h.pid}, ${h.version}, since ${h.startedAt}, ${h.activeJobs} active job(s)`,
+				);
+			} else out("not running");
+			return daemon ? 0 : EXIT_FAILED;
+		}
+		if (sub === "stop") {
+			if (!daemon) {
+				out("not running");
+				return 0;
+			}
+			await daemon.client.call("POST", "/v1/shutdown", { force: Boolean(values.force) });
+			const deadline = performance.now() + 30_000;
+			while ((await daemon.client.health()) && performance.now() < deadline) await Bun.sleep(50);
+			out("stopped");
+			return 0;
+		}
+		throw new UsageError(`unknown daemon command '${sub}' (status, stop)`);
 	},
 };
 
@@ -516,7 +512,7 @@ export async function main(argv: string[]): Promise<number> {
 	const [name, ...rest] = argv;
 	if (!name || name === "-h" || name === "--help" || name === "help") {
 		out(HELP);
-		return name ? 0 : 2;
+		return name ? 0 : EXIT_USAGE;
 	}
 	if (name === "--version" || name === "-V") {
 		out(`omp-task ${VERSION}`);
@@ -525,19 +521,20 @@ export async function main(argv: string[]): Promise<number> {
 	const command = commands[name];
 	if (!command) {
 		process.stderr.write(`omp-task: unknown command '${name}' (see omp-task --help)\n`);
-		return 2;
+		return EXIT_USAGE;
 	}
-	const store = new Store();
 	try {
-		return await command(store, rest);
+		return await command(rest);
 	} catch (e) {
 		if (e instanceof UsageError) {
 			process.stderr.write(`omp-task: ${e.message}\n`);
-			return 2;
+			return EXIT_USAGE;
+		}
+		if (e instanceof DaemonError) {
+			process.stderr.write(`omp-task: ${e.message}\n`);
+			return EXIT_DAEMON;
 		}
 		throw e;
-	} finally {
-		store.close();
 	}
 }
 

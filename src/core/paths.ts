@@ -2,8 +2,8 @@
  * Where omp-task keeps its state and config. The environment overrides are the same as v0.2:
  * OMP_TASK_HOME (state dir), OMP_TASK_CONFIG (config file), OMP_TASK_OMP_BIN (omp binary).
  */
-import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, mkdirSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
 function expand(p: string): string {
@@ -51,3 +51,27 @@ export const PREAMBLE_FILE = join(import.meta.dir, "..", "prompts", "worker-prea
 
 /** The CLI entry point, used to spawn detached runners. */
 export const CLI_ENTRY = join(import.meta.dir, "..", "cli", "main.ts");
+
+/**
+ * The daemon's socket. One daemon serves one state dir, so the name is derived from it; it lives
+ * in the runtime dir (AF_UNIX paths are limited to ~108 bytes, which rules out the state dir).
+ */
+export function socketPath(): string {
+	const base = process.env.XDG_RUNTIME_DIR
+		? join(process.env.XDG_RUNTIME_DIR, "claude-omp")
+		: join(tmpdir(), `claude-omp-${process.getuid?.() ?? "user"}`);
+	mkdirSync(base, { recursive: true, mode: 0o700 });
+	chmodSync(base, 0o700);
+	const key = new Bun.CryptoHasher("sha256").update(stateDir()).digest("hex").slice(0, 12);
+	return join(base, `${key}.sock`);
+}
+
+export function lockFile(): string {
+	mkdirSync(stateDir(), { recursive: true });
+	return join(stateDir(), "daemon.lock");
+}
+
+export function daemonLogFile(): string {
+	mkdirSync(stateDir(), { recursive: true });
+	return join(stateDir(), "daemon.log");
+}

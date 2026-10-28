@@ -3,9 +3,18 @@
 export const ACTIVE_STATUSES = ["queued", "starting", "running", "waiting"] as const;
 export const TERMINAL_STATUSES = ["completed", "failed", "cancelled", "timeout"] as const;
 
+/** The daemon stopped while the job ran; `omp-task resume` continues its omp session. */
+export const INTERRUPTED = "interrupted" as const;
+
 export type ActiveStatus = (typeof ACTIVE_STATUSES)[number];
 export type TerminalStatus = (typeof TERMINAL_STATUSES)[number];
-export type JobStatus = ActiveStatus | TerminalStatus;
+export type JobStatus = ActiveStatus | TerminalStatus | typeof INTERRUPTED;
+
+export const ALL_STATUSES: readonly JobStatus[] = [
+	...ACTIVE_STATUSES,
+	INTERRUPTED,
+	...TERMINAL_STATUSES,
+];
 
 export const ACCESS_LEVELS = ["read", "edit", "full"] as const;
 export type Access = (typeof ACCESS_LEVELS)[number];
@@ -83,8 +92,15 @@ export interface FeedEntry {
 	data: Record<string, unknown>;
 }
 
-export type CommandKind = "steer" | "abort" | "reply" | "approve";
+export type ControlKind = "steer" | "abort" | "reply" | "approve";
 export type ApprovalDecision = "approve" | "session" | "deny";
+
+export interface ControlRequest {
+	kind: ControlKind;
+	message?: string | undefined;
+	ref?: string | null | undefined;
+	decision?: ApprovalDecision | undefined;
+}
 
 export interface CommandResult {
 	ok: boolean;

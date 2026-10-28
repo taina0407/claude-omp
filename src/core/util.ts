@@ -1,4 +1,5 @@
 /** Small helpers shared across the CLI and the runner. */
+import { readFileSync } from "node:fs";
 
 export class UsageError extends Error {}
 
@@ -84,4 +85,33 @@ export function pidAlive(pid: number | null | undefined): boolean {
 
 export function errorText(e: unknown): string {
 	return e instanceof Error ? e.message : String(e);
+}
+
+/** The command line of a running process, or null (Linux /proc, else `ps`). */
+export function processCommand(pid: number): string | null {
+	try {
+		return readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ").trim();
+	} catch {
+		const p = Bun.spawnSync(["ps", "-o", "command=", "-p", String(pid)], {
+			stdout: "pipe",
+			stderr: "ignore",
+		});
+		const out = p.stdout.toString().trim();
+		return p.exitCode === 0 && out ? out : null;
+	}
+}
+
+/**
+ * Stops a worker left behind by a dead daemon. Only a process that still looks like an omp RPC
+ * worker is signalled, so a recycled pid is never hit. Returns true if one was stopped.
+ */
+export function stopOrphanWorker(pid: number | null | undefined, graceMs = 5_000): boolean {
+	if (!pid || !pidAlive(pid)) return false;
+	const cmd = processCommand(pid);
+	if (!cmd?.includes("--mode rpc")) return false;
+	process.kill(pid, "SIGTERM");
+	const deadline = Date.now() + graceMs;
+	while (Date.now() < deadline && pidAlive(pid)) Bun.sleepSync(50);
+	if (pidAlive(pid)) process.kill(pid, "SIGKILL");
+	return true;
 }

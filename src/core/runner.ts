@@ -1,8 +1,8 @@
 /**
- * Runs one job to completion: starts the backend session, turns its events into job state, feed
- * lines and pending questions/approvals, executes control commands queued by the CLI, and
- * enforces timeouts. In M1 each runner is its own detached process; the daemon (M2) will host
- * many of them.
+ * Runs one job to completion inside the daemon: starts the backend session, turns its events
+ * into job state, feed lines and pending questions/approvals, applies the orchestrator's control
+ * requests, and enforces timeouts. A job can be run again with `resume` after the daemon stopped
+ * under it; its counters carry over.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,8 +11,16 @@ import { ompRpcBackend } from "../backends/omp-rpc/session";
 import type { Backend, BackendEvent, BackendSession } from "../backends/types";
 import { changedFiles, type Snapshot, snapshot, withoutDir } from "./git";
 import { jobDir, PREAMBLE_FILE, stateDir } from "./paths";
-import type { CommandRow, Store } from "./store";
-import type { Job, JobStatus, PendingKind, TerminalStatus } from "./types";
+import type { Store } from "./store";
+import type {
+	ApprovalDecision,
+	CommandResult,
+	ControlRequest,
+	Job,
+	JobStatus,
+	PendingKind,
+	TerminalStatus,
+} from "./types";
 import { nowIso } from "./util";
 
 /** Tools whose calls are worth a feed line: they change things or start sub-work. */
@@ -20,6 +28,11 @@ const FEED_TOOLS = new Set(["write", "edit", "bash", "eval", "task"]);
 const TICK_MS = 100;
 /** After an abort, how long omp gets to wind down before the job is closed anyway. */
 const ABORT_GRACE_MS = 15_000;
+/** Sent when a job is resumed after an interruption (omp does not persist an aborted turn). */
+export const RESUME_PROMPT =
+	"Your previous turn was interrupted before it finished (the supervising process restarted). " +
+	"Check what you already did, then continue the task from where you stopped and end with the " +
+	"report the task asks for.";
 const QUESTION_EXPIRED_ANSWER =
 	"No answer from the orchestrator in time. Make the most reasonable assumption, continue, " +
 	"and list the assumption under Open issues.";
@@ -56,7 +69,13 @@ export class JobRunner {
 	#abortDeadline: number | null = null;
 	#finished = false;
 	#started = performance.now();
+	/** Duration of earlier runs of this job (before an interruption). */
+	readonly #baseDurationS: number;
 	#gitBefore: Snapshot | null = null;
+	/** The omp session this run resumed after an interruption, if any. */
+	#resumedSession: string | null = null;
+	/** Whether omp got as far as reporting its session (it never does when --resume fails). */
+	#sawStart = false;
 	#tick: ReturnType<typeof setInterval> | null = null;
 	#done: Promise<Job>;
 	#resolveDone!: (job: Job) => void;
@@ -66,6 +85,8 @@ export class JobRunner {
 	#toolErrors: Record<string, number> = {};
 	#denied = new Set<string>();
 	#errors: string[] = [];
+	/** Cost recorded by earlier runs of this job; this run's cost is added on top. */
+	readonly #baseCostUsd: number;
 	#costUsd = 0;
 	#subagentCost = new Map<string, number>();
 	#subagentStatus = new Map<string, string>();
@@ -81,39 +102,74 @@ export class JobRunner {
 		const job = store.getJob(jobId);
 		if (!job) throw new Error(`no job ${jobId}`);
 		this.#job = job;
+		this.#tools = { ...job.tools };
+		this.#toolErrors = { ...job.toolErrors };
+		this.#denied = new Set(job.deniedTools);
+		this.#errors = [...job.errors];
+		this.#tokens = job.tokens;
+		this.#baseCostUsd = job.costUsd;
+		this.#baseDurationS = job.durationS ?? 0;
+		this.#modelUsed = job.modelUsed;
 		this.#done = new Promise((resolve) => {
 			this.#resolveDone = resolve;
 		});
 	}
 
-	/** Starts the job; resolves with the final record once it has ended. */
-	run(): Promise<Job> {
+	/**
+	 * Starts the job; resolves with the final record once it has ended. With `resume`, an
+	 * interrupted job goes on in its omp session (or starts over if it never got one).
+	 */
+	run(opts: { resume?: boolean } = {}): Promise<Job> {
 		const job = this.#job;
-		this.#gitBefore = snapshot(job.cwd);
-		const dir = jobDir(job.id);
+		this.#gitBefore = this.#loadGitBefore(job);
 		this.#store.updateJob(job.id, {
 			status: "starting",
-			startedAt: nowIso(),
+			startedAt: job.startedAt ?? nowIso(),
+			finishedAt: null,
 			runnerPid: process.pid,
 		});
+		if (opts.resume && job.sessionId) {
+			this.#resumedSession = job.sessionId;
+			this.#startSession(job.sessionId, RESUME_PROMPT);
+		} else {
+			this.#startSession(job.resumeSession, promptText(job));
+		}
+		this.#tick = setInterval(() => this.#onTick(), TICK_MS);
+		return this.#done;
+	}
+
+	#startSession(resumeSession: string | null, prompt: string): void {
+		const job = this.#job;
+		const dir = jobDir(job.id);
 		this.#session = this.#backend.start(
 			{
 				cwd: job.cwd,
 				access: job.access,
 				model: job.model,
 				thinking: job.thinking,
-				resumeSession: job.resumeSession,
+				resumeSession,
 				systemPromptFile: job.noPreamble || !existsSync(PREAMBLE_FILE) ? null : PREAMBLE_FILE,
 				addDirs: job.addDirs,
 				extraArgs: job.extraArgs,
-				prompt: promptText(job),
+				prompt,
 				rawLogPath: join(dir, "events.jsonl"),
 				stderrPath: join(dir, "stderr.log"),
 			},
 			(e) => this.#onEvent(e),
 		);
-		this.#tick = setInterval(() => this.#onTick(), TICK_MS);
-		return this.#done;
+	}
+
+	/** The dirty-file snapshot from the job's first run, so a resumed job reports all its changes. */
+	#loadGitBefore(job: Job): Snapshot | null {
+		const file = join(jobDir(job.id), "git-before.json");
+		if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8")) as Snapshot | null;
+		const snap = snapshot(job.cwd);
+		writeFileSync(file, JSON.stringify(snap));
+		return snap;
+	}
+
+	get finished(): boolean {
+		return this.#finished;
 	}
 
 	/** Asks the job to stop, as `omp-task cancel` does. */
@@ -122,6 +178,39 @@ export class JobRunner {
 			this.#feed("abort", "cancel requested");
 			this.#abort("cancelled");
 		}
+	}
+
+	/** Ends the job as interrupted (the daemon is shutting down); `resume` can continue it. */
+	async interrupt(reason: string): Promise<void> {
+		if (this.#finished) return;
+		this.#finished = true;
+		if (this.#tick) clearInterval(this.#tick);
+		await this.#session?.close();
+		this.#store.clearPending(this.#jobId);
+		this.#store.updateJob(this.#jobId, {
+			...this.#progress(),
+			status: "interrupted",
+			runnerPid: null,
+			ompPid: null,
+		});
+		this.#feed("interrupted", reason);
+		this.#resolveDone(this.#store.getJob(this.#jobId) as Job);
+	}
+
+	/** Counters that are saved as they change, so an interruption loses nothing. */
+	#progress() {
+		const subagentCost = [...this.#subagentCost.values()].reduce((a, b) => a + b, 0);
+		return {
+			costUsd: Math.round((this.#baseCostUsd + this.#costUsd + subagentCost) * 1e6) / 1e6,
+			tokens: this.#tokens,
+			tools: this.#tools,
+			toolErrors: this.#toolErrors,
+			deniedTools: [...this.#denied].sort(),
+			errors: this.#errors.slice(-5),
+			modelUsed: this.#modelUsed,
+			durationS:
+				Math.round(this.#baseDurationS * 10 + (performance.now() - this.#started) / 100) / 10,
+		};
 	}
 
 	#feed(kind: string, text = "", data: Record<string, unknown> = {}): void {
@@ -149,6 +238,7 @@ export class JobRunner {
 				this.#store.updateJob(this.#jobId, { ompPid: e.pid });
 				break;
 			case "started":
+				this.#sawStart = true;
 				this.#store.updateJob(this.#jobId, { sessionId: e.sessionId, modelResolved: e.model });
 				this.#setStatus(this.#pending.size ? "waiting" : "running");
 				this.#feed("started", this.#job.title, {
@@ -181,9 +271,13 @@ export class JobRunner {
 					this.#errors.push(e.error);
 					this.#feed("error", e.error.slice(0, 300));
 				}
+				this.#store.updateJob(this.#jobId, this.#progress());
 				break;
 			case "subagent": {
-				if (e.costUsd !== null) this.#subagentCost.set(e.id, e.costUsd);
+				if (e.costUsd !== null && e.costUsd !== this.#subagentCost.get(e.id)) {
+					this.#subagentCost.set(e.id, e.costUsd);
+					this.#store.updateJob(this.#jobId, this.#progress());
+				}
 				const before = this.#subagentStatus.get(e.id);
 				if (e.status && e.status !== before) {
 					this.#subagentStatus.set(e.id, e.status);
@@ -241,6 +335,19 @@ export class JobRunner {
 	}
 
 	#finishFromEnd(e: Extract<BackendEvent, { kind: "end" }>): Promise<void> {
+		if (
+			this.#resumedSession &&
+			!this.#sawStart &&
+			!this.#abortReason &&
+			e.outcome === "failed" &&
+			/session .* not found/i.test(e.error ?? "")
+		) {
+			// Interrupted before omp saved anything: there is no session to go back to.
+			this.#resumedSession = null;
+			this.#feed("info", "omp had not saved the session before the interruption; starting over");
+			this.#startSession(this.#job.resumeSession, promptText(this.#job));
+			return Promise.resolve();
+		}
 		if (this.#abortReason) return this.#finish(this.#abortReason, [], e.exitCode);
 		if (e.outcome === "completed") {
 			return this.#finish(this.#stopReason === "error" ? "failed" : "completed", [], e.exitCode);
@@ -253,9 +360,6 @@ export class JobRunner {
 
 	#onTick(): void {
 		if (this.#finished) return;
-		for (const cmd of this.#store.openCommands(this.#jobId)) {
-			this.#store.completeCommand(cmd.id, this.#onCommand(cmd));
-		}
 		const now = performance.now();
 		const timeout = this.#job.timeoutS;
 		if (timeout && !this.#abortReason && now - this.#started > timeout * 1000) {
@@ -269,13 +373,14 @@ export class JobRunner {
 		this.#expirePending(now);
 	}
 
-	#onCommand(cmd: CommandRow): { ok: boolean; error?: string; ref?: string } {
+	/** Applies a control request from the orchestrator (steer, abort, reply, approve). */
+	control(cmd: ControlRequest): CommandResult {
 		if (this.#finished) return { ok: false, error: "job already ended" };
 		const session = this.#session;
 		if (!session) return { ok: false, error: "job has not started" };
 		switch (cmd.kind) {
 			case "steer": {
-				const message = cmd.payload.message ?? "";
+				const message = cmd.message ?? "";
 				session.steer(message);
 				this.#feed("steer", message.slice(0, 300));
 				return { ok: true };
@@ -286,7 +391,7 @@ export class JobRunner {
 			case "reply":
 			case "approve": {
 				const kind: PendingKind = cmd.kind === "reply" ? "question" : "approval";
-				const ref = cmd.payload.ref ?? null;
+				const ref = cmd.ref ?? null;
 				const match = [...this.#pending.entries()].find(
 					([r, p]) => p.kind === kind && (!ref || r === ref),
 				);
@@ -295,11 +400,11 @@ export class JobRunner {
 				}
 				const [r, item] = match;
 				if (cmd.kind === "reply") {
-					const message = cmd.payload.message ?? "";
+					const message = cmd.message ?? "";
 					this.#resolvePending(r, message);
 					this.#feed("answered", message.slice(0, 300), { ref: r });
 				} else {
-					const decision = cmd.payload.decision ?? "approve";
+					const decision: ApprovalDecision = cmd.decision ?? "approve";
 					this.#resolvePending(r, null, decision);
 					this.#feed(`approval-${decision}`, item.text.slice(0, 200), { ref: r });
 				}
@@ -360,33 +465,22 @@ export class JobRunner {
 		await this.#session?.close();
 		const job = this.#job;
 		const after = this.#gitBefore ? snapshot(job.cwd) : null;
-		const subagentCost = [...this.#subagentCost.values()].reduce((a, b) => a + b, 0);
-		const allErrors = [...this.#errors, ...errors].slice(-5);
+		this.#errors.push(...errors);
 		const changed = withoutDir(changedFiles(this.#gitBefore, after), job.cwd, stateDir());
-		const costUsd = Math.round((this.#costUsd + subagentCost) * 1e6) / 1e6;
+		const progress = this.#progress();
 		writeFileSync(join(jobDir(job.id), "result.md"), this.#finalText);
 		this.#store.clearPending(job.id);
-		// Commands that arrived too late still get an answer.
-		for (const cmd of this.#store.openCommands(job.id)) {
-			this.#store.completeCommand(cmd.id, { ok: false, error: `job already ${status}` });
-		}
 		this.#store.updateJob(job.id, {
+			...progress,
 			status,
 			finishedAt: nowIso(),
-			durationS: Math.round((performance.now() - this.#started) / 100) / 10,
-			modelUsed: this.#modelUsed,
 			stopReason: this.#stopReason,
-			tools: this.#tools,
-			toolErrors: this.#toolErrors,
-			deniedTools: [...this.#denied].sort(),
-			errors: allErrors,
 			changedFiles: changed,
-			costUsd,
-			tokens: this.#tokens,
 			exitCode,
 			runnerPid: null,
+			ompPid: null,
 		});
-		this.#feed("done", status, { changed_files: changed, cost_usd: costUsd });
+		this.#feed("done", status, { changed_files: changed, cost_usd: progress.costUsd });
 		this.#resolveDone(this.#store.getJob(job.id) as Job);
 	}
 }
