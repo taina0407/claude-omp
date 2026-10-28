@@ -42,6 +42,8 @@ const configSchema = z.looseObject({
 	auto_resume: z.boolean().optional(),
 	/** Stop the daemon after this long with no jobs and no clients (default 15m). */
 	daemon_idle_timeout: duration.optional(),
+	/** Finished jobs (and their files) are deleted after this long (default 30d; 0 keeps them). */
+	job_retention: duration.optional(),
 	/** Jobs running at once across everything (default 4). */
 	max_concurrent: z.number().int().positive().optional(),
 	/** Jobs that may edit one checkout at once when they are not isolated (default 1). */

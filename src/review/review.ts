@@ -3,18 +3,18 @@
  * review. The diff is always saved as review.diff in the job directory; small diffs are also
  * pasted into the prompt.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { createJob, type JobOptions } from "../core/jobs";
 import type { Store } from "../core/store";
 import type { Job } from "../core/types";
+import ADVERSARIAL from "./prompts/adversarial.md" with { type: "text" };
+import STANDARD from "./prompts/standard.md" with { type: "text" };
 import type { ReviewMode } from "./schema";
 import { collectDiff, type ReviewTarget } from "./target";
 
 /** Diffs up to this size go into the prompt; larger ones are only referenced. */
 export const REVIEW_INLINE_BYTES = 150_000;
 
-const PROMPTS_DIR = join(import.meta.dir, "prompts");
+const TEMPLATES: Record<ReviewMode, string> = { standard: STANDARD, adversarial: ADVERSARIAL };
 
 /** A code fence longer than any backtick run in `text`. */
 function fenceFor(text: string): string {
@@ -27,7 +27,7 @@ export function reviewPrompt(
 	target: { label: string; diff: string; files: string[] },
 	focus: string | null,
 ): string {
-	const template = readFileSync(join(PROMPTS_DIR, `${mode}.md`), "utf8");
+	const template = TEMPLATES[mode];
 	const size = Buffer.byteLength(target.diff);
 	let diff: string;
 	if (size <= REVIEW_INLINE_BYTES) {

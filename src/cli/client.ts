@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import type { FeedEvent, Health } from "../api/schema";
-import { CLI_ENTRY, socketPath, stateDir } from "../core/paths";
+import { cliCommand, socketPath, stateDir } from "../core/paths";
 import { UsageError } from "../core/util";
 import { VERSION } from "../version";
 
@@ -88,7 +88,8 @@ export async function existingDaemon(): Promise<{ client: Client; health: Health
 function spawnDaemon(): void {
 	mkdirSync(stateDir(), { recursive: true });
 	const out = openSync(join(stateDir(), "daemon.out"), "a");
-	const child = spawn(process.execPath, [CLI_ENTRY, "daemon"], {
+	const [bin, ...args] = cliCommand() as [string, ...string[]];
+	const child = spawn(bin, [...args, "daemon"], {
 		detached: true,
 		stdio: ["ignore", out, out],
 		env: process.env,

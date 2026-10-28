@@ -10,6 +10,13 @@ import type { Job } from "../src/core/types";
 
 const ROOT = join(import.meta.dir, "..");
 export const CLI = join(ROOT, "src/cli/main.ts");
+/**
+ * How the tests run omp-task: from source, or a compiled binary when OMP_TASK_TEST_BIN names one
+ * (`OMP_TASK_TEST_BIN=dist/omp-task bun test` runs the whole suite against the binary).
+ */
+export const CLI_CMD = process.env.OMP_TASK_TEST_BIN
+	? [process.env.OMP_TASK_TEST_BIN]
+	: [process.execPath, CLI];
 const FAKE = join(import.meta.dir, "fake-omp/fake-omp.ts");
 
 export interface Result {
@@ -29,8 +36,11 @@ export class Sandbox {
 	readonly base: string;
 	readonly repo: string;
 	readonly env: Record<string, string>;
+	readonly cmd: string[];
 
-	constructor() {
+	/** `cmd` runs omp-task (default: CLI_CMD, i.e. the sources or OMP_TASK_TEST_BIN). */
+	constructor(cmd: string[] = CLI_CMD) {
+		this.cmd = cmd;
 		this.base = mkdtempSync(join(tmpdir(), "omp-v1-"));
 		this.repo = join(this.base, "repo");
 		mkdirSync(this.repo);
@@ -89,7 +99,7 @@ export class Sandbox {
 		ok: number[] | null = [0],
 		env: Record<string, string> = {},
 	): Promise<Result> {
-		const p = Bun.spawn([process.execPath, CLI, ...args], {
+		const p = Bun.spawn([...this.cmd, ...args], {
 			cwd: this.repo,
 			env: { ...this.env, ...env },
 			stdout: "pipe",
@@ -108,7 +118,7 @@ export class Sandbox {
 
 	/** Runs `omp-task hook <name>` with the hook's JSON on stdin, as Claude Code does. */
 	async hook(name: string, input: unknown, env: Record<string, string> = {}): Promise<Result> {
-		const p = Bun.spawn([process.execPath, CLI, "hook", name], {
+		const p = Bun.spawn([...this.cmd, "hook", name], {
 			cwd: this.repo,
 			env: { ...this.env, ...env },
 			stdin: new Blob([JSON.stringify(input)]),

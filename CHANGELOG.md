@@ -2,6 +2,24 @@
 
 ## Unreleased: v1
 
+### M7: hardening and release
+
+- Release binaries: `bun run build` compiles self-contained `omp-task` binaries for linux and
+  macOS (x64, arm64) with `SHA256SUMS`; pushing a `v*` tag checks the version, runs the checks,
+  builds and publishes a GitHub release. Prompts and the example config are built in, and the
+  binary starts its daemon from itself. The whole e2e suite runs against a binary with
+  `OMP_TASK_TEST_BIN=<binary> bun test`.
+- `omp-task install-binary` (plugin launcher) downloads this version's binary, checks its
+  sha256 and uses it from then on, so Bun becomes optional; a binary from another version is
+  ignored.
+- Jobs of omp-task 0.2 in the same state dir are imported on the daemon's first start (numbers,
+  report and feed); unfinished ones become `failed`, finished ones can be `continue`d.
+- Retention: finished jobs and their files are deleted after `job_retention` (default 30d; jobs
+  that still own a worktree are kept), daily and at daemon start; `prune --jobs [--older D]
+  [--dry-run]` does it by hand. Durations accept days (`7d`).
+- `bun run contract`: opt-in contract tests against a real omp and model (completion, continue,
+  question, approval and allow rule, checkpoint, review, cancel).
+
 ### M6: plugin layer
 
 - The plugin is now called **`omp`** (was `omp-delegate`): `/omp:delegate`, `/omp:review`,

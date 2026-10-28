@@ -6,8 +6,9 @@ allowed-tools: Bash(omp-task *) Bash(bun --version) Bash(omp --version)
 
 1. Run `omp-task setup $ARGUMENTS`. It creates `~/.config/claude-omp/config.json` from the
    example when missing, applies `--stop-gate`, and prints the doctor report.
-2. If Bun is missing (exit 5 mentioning Bun), give the install command
-   `curl -fsSL https://bun.sh/install | bash` and stop. If omp is missing, point to
+2. If Bun is missing (exit 5 mentioning Bun), offer the two ways out: run
+   `omp-task install-binary` (downloads this version's release binary and checks its sha256), or
+   install Bun with `curl -fsSL https://bun.sh/install | bash`. If omp is missing, point to
    https://github.com/can1357/oh-my-pi.
 3. Report in a few lines: omp version, daemon state, presets, and whether the Stop gate is on.
    The Stop gate reviews uncommitted changes with a cheap model when Claude finishes a turn and

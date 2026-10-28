@@ -13,6 +13,7 @@ describe("parseDuration", () => {
 		["20m", 1200],
 		["1h30m", 5400],
 		["1.5h", 5400],
+		["7d", 604_800],
 		[45, 45],
 	])("%p → %p seconds", (input, seconds) => {
 		expect(parseDuration(input)).toBe(seconds);

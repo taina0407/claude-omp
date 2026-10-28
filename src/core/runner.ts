@@ -20,7 +20,7 @@ import {
 	SUBMIT_REVIEW_TOOL,
 } from "../review/schema";
 import { changedFiles, type Snapshot, snapshot, withoutDir } from "./git";
-import { jobDir, PREAMBLE_FILE, stateDir } from "./paths";
+import { jobDir, preambleFile, stateDir } from "./paths";
 import { decideApproval } from "./policy";
 import type { Store } from "./store";
 import type {
@@ -220,7 +220,7 @@ export class JobRunner {
 				model: job.model,
 				thinking: job.thinking,
 				resumeSession,
-				systemPromptFile: job.noPreamble || !existsSync(PREAMBLE_FILE) ? null : PREAMBLE_FILE,
+				systemPromptFile: job.noPreamble ? null : preambleFile(),
 				addDirs: job.addDirs,
 				extraArgs: job.extraArgs,
 				prompt,

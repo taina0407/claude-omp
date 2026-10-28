@@ -14,7 +14,9 @@
 		"lint": "biome check .",
 		"format": "biome check --write .",
 		"check": "bun run typecheck && bun run lint && bun test",
-		"record": "bun run scripts/record-rpc.ts"
+		"record": "bun run scripts/record-rpc.ts",
+		"build": "bun run scripts/build.ts",
+		"contract": "OMP_CONTRACT=1 bun test tests/contract"
 	},
 	"dependencies": {
 		"zod": "4.6.7"

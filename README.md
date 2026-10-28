@@ -35,7 +35,9 @@ What it gives you:
 ## Requirements
 
 - [Claude Code](https://code.claude.com) 2.1.91 or later (plugin `bin/` on PATH)
-- [Bun](https://bun.sh) 1.3 or later (`curl -fsSL https://bun.sh/install | bash`)
+- [Bun](https://bun.sh) 1.3 or later (`curl -fsSL https://bun.sh/install | bash`), or the
+  release binary instead: `omp-task install-binary` fetches the one for this version and checks
+  its sha256
 - `omp` on `PATH`, with at least one provider logged in (`omp login`, then check `omp models`)
 - git (for worktrees, reviews and changed-file detection)
 
@@ -53,8 +55,12 @@ claude plugin install omp@omp-tools
 
 Then run `/omp:setup` in Claude Code. It installs the CLI's dependencies on first use, creates
 `~/.config/claude-omp/config.json` from [config.example.json](config.example.json) and checks
-omp. Upgrading from 0.2: the plugin was renamed from `omp-delegate`; uninstall that one
-(`claude plugin uninstall omp-delegate@omp-tools`).
+omp.
+
+Upgrading from 0.2: the plugin was renamed from `omp-delegate`; uninstall that one
+(`claude plugin uninstall omp-delegate@omp-tools`). Your 0.2 jobs stay visible: the daemon
+imports them from the same state dir on its first start (`list`, `status`, `result` and
+`continue` work on them).
 
 ### From a checkout
 
@@ -100,11 +106,11 @@ omp-task wait 20261028-143002-ab12
 | `reply`, `approve [--session\|--deny]`, `steer`, `cancel` | Talk to a running job |
 | `resume <job>` | Continue a job interrupted by a daemon restart |
 | `status`, `result [--full]`, `list [-C dir] [--group G]`, `summary <group>` | Look at jobs |
-| `diff`, `apply [--3way] [--keep]`, `discard`, `prune` | Worktree jobs |
+| `diff`, `apply [--3way] [--keep]`, `discard`, `prune [--jobs]` | Worktree jobs; old jobs |
 | `review […]` | Structured read-only review |
 | `plan apply <file> [--dry-run]` | A group of jobs with dependencies from YAML/JSON |
 | `watch <job…> [--verbose]` | Event stream (piped: attention lines only) |
-| `doctor`, `setup`, `daemon [status\|stop]`, `hook <name>` | Housekeeping |
+| `doctor`, `setup`, `daemon [status\|stop]`, `hook <name>`, `install-binary` | Housekeeping |
 
 Every reporting command takes `--json`. `omp-task --help` lists all flags.
 
@@ -131,7 +137,8 @@ tool). Deny wins, and an allow rule never matches a command that chains, pipes o
 - `max_concurrent` (4), `max_writers_per_repo` (1), `groups.<name>.{max_concurrent,budget_usd}`,
   `daily_budget_usd`.
 - `auto_resume`, `daemon_idle_timeout` (15m), `on_session_end` (`keep` or `cancel` the
-  session's jobs).
+  session's jobs), `job_retention` (30d: finished jobs and their files are deleted after this;
+  worktree jobs are kept until applied or discarded; `0` keeps everything).
 - `stop_gate`: `enabled`, `model` (smol), `timeout` (3m), `min_severity` (high),
   `max_per_session` (3), `focus`.
 
@@ -169,6 +176,10 @@ bun run check
 The tests drive the real CLI and daemon against a fake `omp` (`tests/fake-omp`) and replay
 recorded omp RPC transcripts (`tests/fixtures/rpc`), so they need no provider access and cost
 nothing. `bun run record` re-records the transcripts against a real omp.
+
+`bun run contract` runs the contract tests against your real omp and model (`smol`, or
+`OMP_CONTRACT_MODEL`); they take a few minutes and a few cents. `bun run build` writes the
+release binaries and `SHA256SUMS` to `dist/`; pushing a `v*` tag builds and publishes them.
 
 ```bash
 claude plugin validate . --strict

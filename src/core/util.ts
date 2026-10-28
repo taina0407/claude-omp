@@ -3,16 +3,16 @@ import { readFileSync } from "node:fs";
 
 export class UsageError extends Error {}
 
-/** '90', '20m', '1h', '1h30m', 90 → seconds. Empty, 0 and null mean "no limit". */
+/** '90', '20m', '1h', '1h30m', '7d', 90 → seconds. Empty, 0 and null mean "no limit". */
 export function parseDuration(value: string | number | null | undefined): number | null {
 	if (value === null || value === undefined || value === "" || value === 0 || value === "0") {
 		return null;
 	}
 	if (typeof value === "number") return value;
-	const units: Record<string, number> = { h: 3600, m: 60, s: 1, "": 1 };
+	const units: Record<string, number> = { d: 86_400, h: 3600, m: 60, s: 1, "": 1 };
 	let total = 0;
 	let matched = false;
-	for (const m of value.matchAll(/(\d+(?:\.\d+)?)\s*([hms]?)/g)) {
+	for (const m of value.matchAll(/(\d+(?:\.\d+)?)\s*([dhms]?)/g)) {
 		matched = true;
 		total += Number(m[1]) * (units[m[2] ?? ""] ?? 1);
 	}

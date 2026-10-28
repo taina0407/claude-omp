@@ -1,13 +1,52 @@
 #!/usr/bin/env bash
 # omp-task launcher for the Claude Code plugin (on the Bash tool's PATH via the plugin's bin/).
-# Runs the CLI with Bun from this checkout, installing its runtime dependencies on first use.
+#
+# Runs, in order of preference:
+#   1. dist/omp-task, a release binary for this version (`omp-task install-binary` fetches it);
+#   2. the sources with Bun, installing the runtime dependency on first use.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+VERSION="$(sed -n 's/^[[:space:]]*"version": "\(.*\)",$/\1/p' "$ROOT/package.json" | head -1)"
+REPO_URL="${OMP_TASK_RELEASE_URL:-https://github.com/taina0407/claude-omp/releases/download/v$VERSION}"
+
+install_binary() {
+  local os arch name tmp
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=x64 ;;
+    aarch64 | arm64) arch=arm64 ;;
+    *) echo "omp-task: no release binary for $(uname -m)" >&2; return 1 ;;
+  esac
+  name="omp-task-$os-$arch"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  curl -fsSL -o "$tmp/$name" "$REPO_URL/$name"
+  curl -fsSL -o "$tmp/SHA256SUMS" "$REPO_URL/SHA256SUMS"
+  grep " $name\$" "$tmp/SHA256SUMS" >"$tmp/sum" || { echo "omp-task: $name missing from SHA256SUMS" >&2; return 1; }
+  if command -v sha256sum >/dev/null; then (cd "$tmp" && sha256sum -c sum >/dev/null)
+  else (cd "$tmp" && shasum -a 256 -c sum >/dev/null); fi || { echo "omp-task: checksum mismatch for $name" >&2; return 1; }
+  mkdir -p "$ROOT/dist"
+  chmod +x "$tmp/$name"
+  mv "$tmp/$name" "$ROOT/dist/omp-task"
+  echo "$VERSION" >"$ROOT/dist/VERSION"
+  echo "installed $ROOT/dist/omp-task ($VERSION, $os-$arch)"
+}
+
+if [[ "${1:-}" == "install-binary" ]]; then
+  install_binary
+  exit $?
+fi
+
+# A binary from another version (the plugin was updated since) is ignored.
+if [[ -x "$ROOT/dist/omp-task" && "$(cat "$ROOT/dist/VERSION" 2>/dev/null)" == "$VERSION" ]]; then
+  exec "$ROOT/dist/omp-task" "$@"
+fi
 
 BUN="$(command -v bun || true)"
 [[ -z "$BUN" && -x "$HOME/.bun/bin/bun" ]] && BUN="$HOME/.bun/bin/bun"
 if [[ -z "$BUN" ]]; then
-  echo "omp-task needs Bun (https://bun.sh): curl -fsSL https://bun.sh/install | bash" >&2
+  echo "omp-task needs Bun (curl -fsSL https://bun.sh/install | bash)," >&2
+  echo "or a release binary: run 'omp-task install-binary'." >&2
   exit 5
 fi
 if [[ ! -d "$ROOT/node_modules/zod" ]]; then

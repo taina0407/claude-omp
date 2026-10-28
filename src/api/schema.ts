@@ -99,6 +99,8 @@ export type ApplyBody = z.infer<typeof applyBody>;
 export const pruneBody = z.object({
 	olderS: z.number().optional(),
 	dryRun: z.boolean().optional(),
+	/** Delete finished jobs and their files instead of worktrees. */
+	jobs: z.boolean().optional(),
 });
 export type PruneBody = z.infer<typeof pruneBody>;
 

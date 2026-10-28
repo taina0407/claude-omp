@@ -7,9 +7,10 @@
  * 4 a job needs the orchestrator (a question, an approval, or an interrupted job to resume),
  * 5 the daemon could not be started or reached.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { type ParseArgsOptionsConfig, parseArgs } from "node:util";
+import EXAMPLE_CONFIG from "../../config.example.json";
 import type {
 	ApplyResponse,
 	ControlResponse,
@@ -23,7 +24,7 @@ import type {
 } from "../api/schema";
 import { loadConfig } from "../core/config";
 import type { JobOptions } from "../core/jobs";
-import { configFile, ompBin, PREAMBLE_FILE, socketPath, stateDir } from "../core/paths";
+import { COMPILED, configFile, ompBin, preambleFile, socketPath, stateDir } from "../core/paths";
 import { orderPlan, readPlanFile } from "../core/plan";
 import {
 	ALL_STATUSES,
@@ -101,6 +102,7 @@ Commands:
   apply <job> [--3way] [--keep]  bring a worktree's changes into the main checkout
   discard <job>            remove a job's worktree without applying it
   prune [--older 7d] [--dry-run]  remove worktrees of finished jobs older than this
+  prune --jobs [--older 30d]      delete finished jobs and their files (also done daily)
   list                     list recent jobs (-n, -C, --status, --group, --json)
   summary <group>          status, cost and changed files of every job in a group
   plan apply <file>        create a group of jobs with dependencies from a YAML/JSON plan
@@ -600,11 +602,13 @@ const commands: Record<string, Command> = {
 		const { values } = parse(argv, {
 			older: { type: "string" },
 			"dry-run": { type: "boolean" },
+			jobs: { type: "boolean" },
 		});
 		const client = await connect();
 		const { removed } = await client.call<{ removed: string[] }>("POST", "/v1/prune", {
-			olderS: pruneSeconds(values.older),
+			olderS: values.jobs && values.older === undefined ? 30 * 86_400 : pruneSeconds(values.older),
 			dryRun: Boolean(values["dry-run"]),
+			jobs: Boolean(values.jobs),
 		});
 		for (const id of removed) out(id);
 		return 0;
@@ -719,7 +723,7 @@ const commands: Record<string, Command> = {
 		const file = configFile();
 		if (!existsSync(file)) {
 			mkdirSync(dirname(file), { recursive: true });
-			copyFileSync(join(import.meta.dir, "../../config.example.json"), file);
+			writeFileSync(file, `${JSON.stringify(EXAMPLE_CONFIG, null, 2)}\n`);
 			out(`created ${file} from config.example.json`);
 		}
 		if (gate) {
@@ -734,6 +738,13 @@ const commands: Record<string, Command> = {
 		return commands.doctor?.([]) ?? 0;
 	},
 
+	async "install-binary"() {
+		// Handled by the plugin launcher (bin/omp-task) before any runtime is needed.
+		throw new UsageError(
+			"run install-binary through the plugin launcher: bin/omp-task install-binary",
+		);
+	},
+
 	async hook(argv) {
 		return hookMain(argv[0]);
 	},
@@ -745,7 +756,7 @@ const commands: Record<string, Command> = {
 			const p = Bun.spawnSync([bin, "--version"], { stdout: "pipe", stderr: "ignore" });
 			out(`omp version:  ${p.stdout.toString().trim()}`);
 		}
-		out(`omp-task:     ${VERSION} (bun ${Bun.version})`);
+		out(`omp-task:     ${VERSION} (bun ${Bun.version}${COMPILED ? ", compiled" : ""})`);
 		out(`state dir:    ${stateDir()}`);
 		const daemon = await existingDaemon();
 		out(
@@ -760,7 +771,7 @@ const commands: Record<string, Command> = {
 		out(`config:       ${cfg} (${existsSync(cfg) ? "present" : "absent, using defaults"})`);
 		const presets = Object.keys(loadConfig().presets ?? {});
 		if (presets.length) out(`presets:      ${presets.join(", ")}`);
-		out(`preamble:     ${PREAMBLE_FILE} (${existsSync(PREAMBLE_FILE) ? "ok" : "missing"})`);
+		out(`preamble:     ${preambleFile()}`);
 		const gate = loadConfig().stop_gate;
 		out(
 			`stop gate:    ${gate?.enabled ? `on (${gate.model ?? "smol"})` : "off (omp-task setup --stop-gate on)"}`,

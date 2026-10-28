@@ -306,6 +306,16 @@ export class Store {
 		return res.changes > 0;
 	}
 
+	/** Removes a job with its feed and pending items (its directory is the caller's). */
+	deleteJob(id: string): void {
+		this.db.transaction(() => {
+			for (const table of ["feed", "pending"]) {
+				this.db.query(`DELETE FROM ${table} WHERE job_id = ?`).run(id);
+			}
+			this.db.query("DELETE FROM jobs WHERE id = ?").run(id);
+		})();
+	}
+
 	/** Jobs that are not finished yet, oldest first (the scheduler's view). */
 	unfinishedJobs(): Job[] {
 		const rows = this.db
@@ -408,8 +418,8 @@ export class Store {
 		kind: string,
 		text = "",
 		data: Record<string, unknown> = {},
+		ts = nowIso(),
 	): FeedEntry {
-		const ts = nowIso();
 		const seq = this.db.transaction(() => {
 			const row = this.db
 				.query("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM feed WHERE job_id = ?")

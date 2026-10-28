@@ -30,6 +30,7 @@ import {
 } from "../api/schema";
 import { type Config, loadConfig } from "../core/config";
 import { createJob, NotFoundError, resolveJob } from "../core/jobs";
+import { importLegacyJobs } from "../core/legacy";
 import { socketPath } from "../core/paths";
 import { orderPlan } from "../core/plan";
 import { JobRunner } from "../core/runner";
@@ -40,6 +41,7 @@ import { applyWorktree, removeWorktree, worktreePatch } from "../isolation/workt
 import { createReviewJob } from "../review/review";
 import type { ReviewTarget } from "../review/target";
 import { VERSION } from "../version";
+import { collectGarbage, DEFAULT_RETENTION_S } from "./gc";
 import { acquireLock, releaseLock } from "./lock";
 import { log } from "./log";
 import { budgetBlock, groupLimits, schedule } from "./scheduler";
@@ -49,6 +51,7 @@ const IDLE_CHECK_MS = 1_000;
 /** Longest a single `wait` request is held open; the CLI simply asks again. */
 const MAX_LONG_POLL_S = 60;
 const SSE_HEARTBEAT_MS = 15_000;
+const HOUSEKEEPING_MS = 24 * 3600_000;
 /** Notices `wait` returns for; `--no-checkpoint` leaves checkpoints in the feed only. */
 const NOTICE_KINDS = ["checkpoint", "stalled"] as const;
 
@@ -107,6 +110,7 @@ export class Daemon {
 	#clients = 0;
 	#lastActivity = performance.now();
 	#idleTimer: ReturnType<typeof setInterval> | null = null;
+	#housekeepingTimer: ReturnType<typeof setInterval> | null = null;
 	#stopping: Promise<void> | null = null;
 
 	constructor() {
@@ -128,6 +132,8 @@ export class Daemon {
 		) as Server<undefined>;
 		chmodSync(path, 0o600);
 		log("info", "listening", { socket: path, version: VERSION });
+		this.#housekeep();
+		this.#housekeepingTimer = setInterval(() => this.#housekeep(), HOUSEKEEPING_MS);
 		this.#recover();
 		const idleMs = idleSeconds() * 1000;
 		this.#idleTimer = setInterval(() => {
@@ -144,6 +150,7 @@ export class Daemon {
 	stop(reason: string): Promise<void> {
 		this.#stopping ??= (async () => {
 			if (this.#idleTimer) clearInterval(this.#idleTimer);
+			if (this.#housekeepingTimer) clearInterval(this.#housekeepingTimer);
 			this.#server?.stop(true);
 			await Promise.all([...this.#runners.values()].map((r) => r.interrupt(reason)));
 			try {
@@ -156,6 +163,22 @@ export class Daemon {
 			log("info", "stopped", { reason });
 		})();
 		return this.#stopping;
+	}
+
+	/** Imports omp-task 0.2 jobs and deletes finished jobs past `job_retention`. */
+	#housekeep(): void {
+		try {
+			const imported = importLegacyJobs(this.store);
+			if (imported.length) log("info", "imported omp-task 0.2 jobs", { count: imported.length });
+			const raw = safeConfig().job_retention;
+			const retention = raw === undefined ? DEFAULT_RETENTION_S : parseDuration(raw);
+			if (retention) {
+				const removed = collectGarbage(this.store, retention);
+				if (removed.length) log("info", "deleted old jobs", { count: removed.length });
+			}
+		} catch (e) {
+			log("error", "housekeeping failed", { error: errorText(e) });
+		}
 	}
 
 	/** Jobs this daemon's predecessor was running when it died are interrupted, not lost. */
@@ -514,6 +537,12 @@ export class Daemon {
 
 	/** Removes worktrees of finished jobs older than `olderS` (default a week). */
 	#prune(b: z.infer<typeof pruneBody>): Response {
+		if (b.jobs) {
+			const res: PruneResponse = {
+				removed: collectGarbage(this.store, b.olderS ?? DEFAULT_RETENTION_S, b.dryRun === true),
+			};
+			return json(res);
+		}
 		const cutoff = Date.now() - (b.olderS ?? 7 * 24 * 3600) * 1000;
 		const removed: string[] = [];
 		for (const job of this.store.listJobs({ limit: 10_000 })) {
