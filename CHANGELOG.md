@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased: v1 (M0: spike + scaffold)
+
+- Start of v1: a TypeScript/Bun rewrite with a per-user daemon.
+- Bun project scaffold: `package.json` (pinned deps), strict `tsconfig.json`, Biome, CI workflow
+  (`bun test`, typecheck, lint, the v0.2 Python tests, `claude plugin validate --strict`).
+- `src/backends/omp-rpc/framing.ts`: JSONL splitting and protocol-v2 `rpc_chunk` reassembly.
+- RPC recorder (`bun run record`) and 10 recorded omp 18.12 RPC fixtures in `tests/fixtures/rpc/`,
+  with invariant tests.
+- Probes: `scripts/probes/omp-flags.ts` (which session flags work in RPC mode),
+  `scripts/probes/unix-serve.ts` (HTTP/SSE over a unix socket with Bun).
+- The v0.2 Python CLI and plugin are unchanged.
+
 ## 0.2.1 — 2026-10-27
 
 - Fix: long jobs were reported as FAILED ("supervisor exited without recording a result")
