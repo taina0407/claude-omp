@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased: v1 (M0: spike + scaffold)
+## Unreleased: v1
+
+### M1: core and omp-rpc backend
+
+- `src/cli/main.ts`: the v1 `omp-task` CLI with every v0.2 command (`run`, `continue`, `wait`,
+  `watch`, `steer`, `reply`, `approve`, `cancel`, `status`, `result`, `list`, `doctor`), the same
+  flags, exit codes, text output and `--json` keys. Run it with `bun src/cli/main.ts`.
+- Job state lives in SQLite (`state.db` in the state dir, WAL). Control commands are queued in
+  the database and picked up by the job's runner, so no per-job socket is needed.
+- `JobRunner` (`src/core/runner.ts`) drives one job; the omp-rpc backend is split into a pure
+  protocol state machine (replayed against the M0 fixtures in tests) and a process wrapper.
+- Behaviour changes from v0.2, all from the M0 recordings:
+  - jobs end on omp's `prompt_result`, so long histories elided from `agent_end` no longer
+    matter;
+  - protocol v2 is negotiated, so frames over 1 MB arrive whole instead of truncated;
+  - a brief over 900 KB is handed to omp as a file (omp rejects longer input lines);
+  - job cost includes subagents (`get_session_stats` leaves them out);
+  - a final message with `stopReason: "error"` fails the job.
+- Tests: a TypeScript fake omp that speaks the recorded protocol, the v0.2 end-to-end suite
+  ported to `bun test`, plus unit tests for the core.
+
+### M0: spike + scaffold
 
 - Start of v1: a TypeScript/Bun rewrite with a per-user daemon.
 - Bun project scaffold: `package.json` (pinned deps), strict `tsconfig.json`, Biome, CI workflow
