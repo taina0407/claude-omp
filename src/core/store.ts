@@ -172,8 +172,10 @@ export class Store {
 
 	constructor(path = dbFile()) {
 		this.db = new Database(path, { create: true, strict: true });
-		this.db.run("PRAGMA journal_mode = WAL");
+		// First, so that switching to WAL waits for a process that holds a lock (a daemon that is
+		// starting up or recovering after a crash) instead of failing with SQLITE_BUSY.
 		this.db.run("PRAGMA busy_timeout = 5000");
+		this.db.run("PRAGMA journal_mode = WAL");
 		this.db.run("PRAGMA foreign_keys = ON");
 		this.migrate();
 	}

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1 (2026-10-29)
+
+- Opening the job database waits for another process that holds a lock on it (a daemon that is
+  starting up or recovering after a crash) instead of failing with "database is locked": the
+  busy timeout is now set before the switch to WAL mode.
+
 ## 1.3.0 (2026-10-29)
 
 - Read-only shell commands no longer wake the orchestrator (`builtin:read-only`, `edit` access):

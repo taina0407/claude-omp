@@ -93,6 +93,37 @@ describe("Store", () => {
 		resumeSession: null,
 	};
 
+	test("opening waits for another process that is writing instead of failing", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "omp-store-"));
+		const path = join(dir, "state.db");
+		try {
+			new Store(path).close();
+			// Another process holds a lock on the file for a moment (here: one that left WAL mode).
+			const holder = Bun.spawn(
+				[
+					process.execPath,
+					"-e",
+					`const { Database } = require("bun:sqlite");
+					const db = new Database(${JSON.stringify(path)});
+					db.run("PRAGMA journal_mode = DELETE");
+					db.run("BEGIN EXCLUSIVE");
+					console.log("locked");
+					await Bun.sleep(500);
+					db.run("COMMIT");`,
+				],
+				{ stdout: "pipe" },
+			);
+			const reader = holder.stdout.getReader();
+			await reader.read(); // "locked"
+			const store = new Store(path);
+			expect(store.listJobs({ limit: 1 })).toEqual([]);
+			store.close();
+			await holder.exited;
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	function withStore(fn: (s: Store, path: string) => void) {
 		const dir = mkdtempSync(join(tmpdir(), "omp-store-"));
 		const path = join(dir, "state.db");
