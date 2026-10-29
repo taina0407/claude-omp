@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { editedPaths } from "../src/backends/omp-rpc/protocol";
+import { newerVersion } from "../src/cli/client";
 import { ompVersionOk } from "../src/cli/main";
 import { pickSetting } from "../src/core/config";
 import { detachedEnv, workerEnv } from "../src/core/env";
@@ -162,6 +163,16 @@ describe("Store", () => {
 		});
 	});
 
+	test("a database of a newer layout is refused, not reset", () => {
+		withStore((s, path) => {
+			s.createJob("20260101-000000-abcd", spec);
+			s.db.run("UPDATE meta SET value = 'omp-task/99' WHERE key = 'schema'");
+			expect(() => new Store(path)).toThrow("newer than this omp-task");
+			s.db.run("UPDATE meta SET value = 'omp-task/2' WHERE key = 'schema'");
+			expect(s.getJob("20260101-000000-abcd")?.title).toBe("t");
+		});
+	});
+
 	test("finds jobs by unique prefix or suffix", () => {
 		withStore((s) => {
 			s.createJob("20260101-000000-abcd", spec);
@@ -278,4 +289,12 @@ describe("editedPaths", () => {
 		expect(editedPaths("bash", { command: "touch x" })).toEqual([]);
 		expect(editedPaths("read", { path: "a.ts" })).toEqual([]);
 	});
+});
+
+test("newerVersion compares release versions", () => {
+	expect(newerVersion("1.2.0", "1.1.2")).toBe(true);
+	expect(newerVersion("1.10.0", "1.9.9")).toBe(true);
+	expect(newerVersion("1.1.2", "1.2.0")).toBe(false);
+	expect(newerVersion("1.2.0", "1.2.0")).toBe(false);
+	expect(newerVersion("1.2.0-dev", "1.2.0")).toBe(false);
 });

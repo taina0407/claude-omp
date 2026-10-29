@@ -117,10 +117,28 @@ async function waitForHealth(client: Client, ms: number): Promise<Health | null>
 	return null;
 }
 
+/** Whether version `a` (x.y.z, any suffix ignored) is newer than `b`. */
+export function newerVersion(a: string, b: string): boolean {
+	const parts = (v: string) => v.split(/[-+]/)[0]?.split(".").map(Number) ?? [];
+	const [x, y] = [parts(a), parts(b)];
+	for (let i = 0; i < Math.max(x.length, y.length); i++) {
+		const d = (x[i] ?? 0) - (y[i] ?? 0);
+		if (d) return d > 0;
+	}
+	return false;
+}
+
 /** Connects to the daemon, starting it (or replacing an idle one of another version) if needed. */
 export async function connect(): Promise<Client> {
 	const client = new Client(socketPath());
 	let health = await client.health();
+	if (health && newerVersion(health.version, VERSION)) {
+		// Replacing it would run an older daemon on a database a newer build may have upgraded.
+		throw new DaemonError(
+			`the omp-task daemon runs ${health.version}, newer than this CLI (${VERSION}); ` +
+				"update the plugin (in Claude Code: /reload-plugins) or use the newer omp-task",
+		);
+	}
 	if (health && health.version !== VERSION) {
 		if (health.activeJobs === 0) {
 			await client.call("POST", "/v1/shutdown", {}).catch(() => {});

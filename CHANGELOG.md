@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 (2026-10-29)
+
+- Downgrade guard: a job database of a newer layout is refused instead of reset (which dropped
+  the newer build's job records), and the CLI no longer replaces a daemon that runs a newer
+  version; both say to update omp-task (`/reload-plugins` in Claude Code). omp-task 1.1.x and
+  older have neither guard: update every open Claude Code session before it runs `omp-task`
+  against a 1.2 daemon.
+
 ## 1.2.0 (2026-10-29)
 
 - Workers no longer carry the identity of the Claude Code session that happened to start the

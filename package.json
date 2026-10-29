@@ -1,6 +1,6 @@
 {
 	"name": "claude-omp",
-	"version": "1.2.0",
+	"version": "1.2.1",
 	"private": true,
 	"description": "Claude Code orchestrates omp workers: delegate, supervise, isolate, review.",
 	"license": "MIT",

@@ -13,6 +13,12 @@ import { nowIso } from "./util";
  */
 const SCHEMA_VERSION = "omp-task/2";
 
+/** The number of an "omp-task/N" layout; 0 for anything else (an older build's layout). */
+function schemaNumber(version: string): number {
+	const m = /^omp-task\/(\d+)$/.exec(version);
+	return m ? Number(m[1]) : 0;
+}
+
 /** Statements that bring a database of the key's version to the next one. */
 const UPGRADES: Record<string, { to: string; sql: string[] }> = {
 	"omp-task/1": { to: "omp-task/2", sql: ["ALTER TABLE jobs ADD COLUMN other_changes TEXT"] },
@@ -182,6 +188,13 @@ export class Store {
 			value: string;
 		} | null;
 		if (row?.value === SCHEMA_VERSION) return;
+		if (row && schemaNumber(row.value) > schemaNumber(SCHEMA_VERSION)) {
+			// Written by a newer omp-task: resetting it would drop that build's job records.
+			throw new Error(
+				`the job database has layout ${row.value}, newer than this omp-task (${SCHEMA_VERSION}); ` +
+					"update omp-task (in Claude Code: /reload-plugins after the plugin update)",
+			);
+		}
 		let version = row?.value;
 		if (version && UPGRADES[version]) {
 			this.db.transaction(() => {
