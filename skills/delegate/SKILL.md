@@ -49,11 +49,15 @@ when it needs this conversation's nuance, touches files you are editing, or is a
    worktree's starting point, so `diff`/`apply` later show only the worker's changes).
 2. **Brief** in a scratchpad file, following [references/brief-template.md](references/brief-template.md):
    goal, context the worker cannot find cheaply, an explicit edit fence (paths relative to the
-   repository, so they hold inside a worktree too), the commands it may run, requirements, "done when" with the exact command. For a long task, ask for a checkpoint
+   repository, so they hold inside a worktree too), the commands it may run, requirements, "done when" with the exact command. Reads and searches are
+   not commands: never list `ls`/`cat`/`grep`/`find`/`sed -n`/`head` (the worker has read/search
+   tools for them), and write a search check as "no matches for X in Y (grep tool)", not as a
+   `grep -rn` command the worker would run in the shell. For a long task, ask for a checkpoint
    at the one moment you want to look; everything else the worker reports at the end.
 3. **Model, access, isolation, rules**: [references/models-and-access.md](references/models-and-access.md).
    Prefer omp roles (`smol`, `task`, `default`, `slow`, `plan`, `designer`). Pass one `--allow`
-   per command the brief lists (`--allow 'bun test*' --allow 'bun run typecheck'`). Workers
+   per command the brief lists (`--allow 'bun test*' --allow 'bun run typecheck'`), never for a
+   read or search command. Workers
    like to check their own work, and in `edit` access every command no rule decides wakes you,
    so list the commands, or write "none: verify with the read/search tools".
 4. **Start**: `omp-task run --detach --brief <file> -m <model> -a <access> [--isolate worktree]

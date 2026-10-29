@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.2 (2026-10-29)
+
+- Workers read and search with their tools, not the shell: the worker preamble names the tools
+  (`read`, `grep`, `find`, `glob`) and says a read written as a command in the brief, AGENTS.md
+  or docs (`ls`, `cat`, `grep`, `sed -n`, `node -p "require(…)"`, …) is still done with the
+  matching tool. The brief template and the skill no longer let a brief list read commands
+  under "Allowed commands" or `--allow`, and write search checks in "Done when" as "no matches
+  for X in Y (grep tool)" instead of a `grep -rn` command.
+
 ## 1.2.1 (2026-10-29)
 
 - Downgrade guard: a job database of a newer layout is refused instead of reset (which dropped

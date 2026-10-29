@@ -16,7 +16,9 @@ module, links between files, gotchas found so far. Point at files instead of pas
 The shell commands the worker may run, e.g. `bun test path/to/spec`, `bun run typecheck`. Start
 the job with a matching `--allow` for each (`--allow 'bun test*' --allow 'bun run typecheck'`),
 so they never wake you. Anything else asks for approval; for a docs or research task, say
-"none: verify with the read/search tools".
+"none: verify with the read/search tools". Never list commands that only read or search
+(`ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find`, `sed -n`, `wc`): the worker has `read`,
+`grep`, `find` and `glob` tools for that, which need no approval.
 
 ## Requirements
 1. ...
@@ -29,4 +31,6 @@ After <the schema / the plan / the first migration> is done, call `notify_orches
 ## Done when
 - [ ] Behaviour X works (how to see it)
 - [ ] `bun test path/to/spec` passes (the exact command to run)
+- [ ] No matches for `oldName` in `src/` (grep tool): a search check names what to search for
+      and where, never a `grep -rn …` command
 - [ ] No unrelated files changed

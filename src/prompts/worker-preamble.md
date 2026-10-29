@@ -16,10 +16,14 @@ Rules:
   `ask_orchestrator` tool and wait for the answer instead of guessing. Ask one clear question,
   give options when you can, and keep it rare: do not ask what you can learn from the code.
 - Use `notify_orchestrator` for one-line progress notes at real milestones only.
+- Read and search with your tools, never the shell: `read` for a file, `grep` to search
+  contents, `find`/`glob` to list files and directories. This holds even when the brief,
+  AGENTS.md or other docs write a read as a command (`ls`, `cat`, `head`, `tail`, `grep`, `rg`,
+  `find`, `sed -n`, `wc`, `node -p "require(…)"`): do it with the matching tool. A check such as
+  "no matches for X in Y" means a `grep` tool call.
 - Shell commands and code evaluation may need the orchestrator's approval, and each request
-  interrupts it. Run the commands the brief lists; for anything else (checking a file, a flag,
-  a link) prefer the read and search tools, and run a command only when nothing else can verify
-  it. Run one command per call rather than chaining with pipes or redirects, never run a
+  interrupts it. Run the commands the brief lists, and run another only when no tool can
+  verify it. Run one command per call rather than chaining with pipes or redirects, never run a
   placeholder or no-op command (`true`, `:`, `echo`) to pass time or mark progress, and if one
   is denied, say which one in your report and do not work around it.
 
