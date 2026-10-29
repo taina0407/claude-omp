@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.0 (2026-10-29)
+
+- Read-only shell commands no longer wake the orchestrator (`builtin:read-only`, `edit` access):
+  `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `sort`, `uniq`, `sed -n 'N,Mp'`,
+  `cd` and a few more, joined by `&&`, `||`, `;` or `|`, with `2>/dev/null`-style redirects,
+  are approved by themselves when their words are plain (no variables, unquoted globs or `~`),
+  paths stay inside the job's directories, and the bash call sets no environment variables.
+  Arguments that write, run a program or never end (`find -exec`/`-delete`, `sort -o`,
+  `uniq IN OUT`, `rg --pre`, `tail -f`) still ask, and so does `git`, which repository
+  configuration can make run a helper. The job report counts these "shell reads
+  auto-approved". `--no-read-only` (or `--deny builtin:read-only`) turns it off.
+- `approve --same` approves a request and allows that exact command for the rest of the job;
+  `approve --rule GLOB` adds an allow rule, which must approve the request. Both carry over to
+  `continue`, and decide other open approvals the rule covers.
+- Allow rules now cover pipes: a command line is split at `|` too and every command must match
+  (`bun test*` with `tail` approved covers `bun test 2>&1 | tail -50`; `bun test | sh` still
+  asks). `2>/dev/null`, `>/dev/null`, `&>/dev/null` and `2>&1` no longer block a rule;
+  parentheses and other redirects still do. Quoted text such as `grep '<div'` no longer counts
+  as a redirect. In rules, `\*`, `\?` and `\\` match those characters.
+- No allow rule approves a command omp shortened in its approval prompt (over 2000 characters),
+  since the hidden part could be anything.
+
 ## 1.2.2 (2026-10-29)
 
 - Workers read and search with their tools, not the shell: the worker preamble names the tools

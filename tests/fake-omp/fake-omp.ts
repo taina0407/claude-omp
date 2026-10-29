@@ -11,6 +11,8 @@
  *   ASK           ask_orchestrator (after omp's own approval prompt for it); answer goes in the text
  *   BASH          request approval for `make test`; the decision goes in the text
  *   BASHCHAIN     the same for `make test && rm -rf build`
+ *   SH <b64>      bash calls from base64url JSON [{command, cwd?, env?}], each asking approval;
+ *                 the decisions go in the text as sh<n>=<decision>
  *   NOTIFY        notify_orchestrator
  *   CHECKPOINT    notify_orchestrator with checkpoint: true (a 600-character note ending in END)
  *   TOOLS <n>     n quick read tool calls
@@ -269,6 +271,33 @@ async function runPrompt(prompt: Frame): Promise<void> {
 				isError: denied,
 				result: { content: [{ type: "text", text: denied ? "Tool call denied by user" : "ok" }] },
 			});
+		} else if (word === "SH") {
+			const calls = JSON.parse(Buffer.from(next, "base64url").toString()) as Frame[];
+			for (const [n, args] of calls.entries()) {
+				const id = `sh${n}`;
+				emit({ type: "tool_execution_start", toolName: "bash", toolCallId: id, args });
+				emit({
+					type: "extension_ui_request",
+					id: `ap-${id}`,
+					method: "select",
+					title: `Allow tool: bash\nCommand: ${String(args.command)}`,
+					options: ["Approve", "Approve bash for this session", "Deny"],
+				});
+				const res = await waitFor(
+					(f) => f.type === "extension_ui_response" && f.id === `ap-${id}`,
+					60_000,
+				);
+				const value = String(res?.value ?? "<none>");
+				notes.push(`${id}=${value}`);
+				emit({
+					type: "tool_execution_end",
+					toolName: "bash",
+					toolCallId: id,
+					isError: value === "Deny",
+					result: { content: [{ type: "text", text: "ok" }] },
+				});
+			}
+			i++;
 		} else if (word === "REVIEW" || word === "REVIEWBAD" || word === "REVIEWWORSE") {
 			const bad = { verdict: "maybe", summary: "", findings: [{ severity: "huge" }] };
 			const payloads =

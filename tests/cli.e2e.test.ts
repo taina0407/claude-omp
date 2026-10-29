@@ -200,6 +200,46 @@ describe("live supervision", () => {
 		expect(out.denied_tools).toEqual(["bash"]);
 	});
 
+	const sh = (calls: Record<string, unknown>[]) =>
+		`SH ${Buffer.from(JSON.stringify(calls)).toString("base64url")}`;
+
+	test("read-only shell commands run without asking, and the report counts them", async () => {
+		const out = await runJson([
+			sh([{ command: "ls src 2>/dev/null; ls docs" }, { command: "cat a.txt | head -5" }]),
+		]);
+		expect(out.status).toBe("completed");
+		expect(out.result).toContain("sh0=Approve sh1=Approve");
+		expect(out.shell_reads_auto_approved).toBe(2);
+		const text = (await cli(["result", out.id as string])).stdout;
+		expect(text).toContain("shell reads auto-approved: 2");
+	});
+
+	test("a read with environment variables, or with --no-read-only, still asks", async () => {
+		for (const args of [
+			[sh([{ command: "ls", env: { BASH_ENV: "x.sh" } }])],
+			["--no-read-only", sh([{ command: "ls" }])],
+		]) {
+			const job = await start(args);
+			await waitForStatus(job, "waiting");
+			await cli(["approve", job]);
+			expect((await waitJson(job)).shell_reads_auto_approved).toBe(0);
+		}
+	});
+
+	test("approve --same allows the same command for the rest of the job", async () => {
+		const curl = { command: "curl -s 'https://x.example/?a=*' | head -3" };
+		const job = await start([sh([curl, { command: "curl -s 'https://x.example/?a=b'" }, curl])]);
+		await waitForStatus(job, "waiting");
+		const bad = await cli(["approve", job, "--rule", "curl -s https://other*"], [1]);
+		expect(bad.stdout).toContain("does not approve this request");
+		await cli(["approve", job, "--same"]);
+		// The second command differs, so it asks; the third is the first again.
+		await waitForStatus(job, "waiting");
+		await cli(["approve", job, "--rule", "curl -s 'https://x.example/*'"]);
+		const out = await waitJson(job);
+		expect(out.result).toContain("sh0=Approve sh1=Approve sh2=Approve");
+	});
+
 	test("steer a running job", async () => {
 		const job = await start(["SLEEP"]);
 		await waitForStatus(job, "running");

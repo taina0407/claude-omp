@@ -46,13 +46,26 @@ does not restrict it.
 `--allow GLOB` approves and `--deny GLOB` denies matching requests without waking you
 (repeatable; also `allow`/`deny` in config defaults and presets, which add up). A rule matches
 the command text (`bun test*`, `git diff*`), or a whole tool when written `tool:<name>`. Deny
-wins. A command list joined with `&&`, `||` or `;` is approved only when every command in it
-matches an allow rule (`mkdir -p src/x && cp a src/x/` with rules for both), so `bun test*`
-cannot approve `bun test; rm -rf ~`; a deny rule matching any command denies the list. A
-command-pattern rule never approves pipes, `&`, redirects or substitutions (`|`, `>`, `$(`).
-The bash no-ops `true` and `:` are approved without a rule. A `tool:<name>` allow skips these
+wins. A command line joined with `&&`, `||`, `;` or `|` is approved only when every command in
+it matches an allow rule (`mkdir -p src/x && cp a src/x/` with rules for both), so `bun test*`
+cannot approve `bun test; rm -rf ~` or `bun test | sh`; a deny rule matching any command denies
+the line. A command-pattern rule never approves `&`, substitutions (`$(`, backticks) or
+redirects other than `2>/dev/null`, `>/dev/null`, `&>/dev/null` and `2>&1`.
+
+Approved without a rule: the bash no-ops `true` and `:`, and in `edit` access commands that only
+read (`builtin:read-only`): `ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find` without
+`-exec`/`-delete`, `sort` without `-o`, `sed -n 'N,Mp'`, `cd` and a few more, with plain words
+(no variables, unquoted globs or `~`) and paths inside the job's directories. Not `git`. So
+never `--allow` a read command (`--allow 'find*'` would also approve `find -delete`). The job
+report counts them ("shell reads auto-approved"): a high count means the worker used bash where
+its read/search tools would do. `--no-read-only` turns it off. A `tool:<name>` allow skips these
 checks and approves every call of the tool, chained or not: treat it as a grant of the whole
 tool.
+
+`omp-task approve <id> --same` approves the request and allows that exact command for the rest
+of the job (and its continuations); `--rule GLOB` adds a rule instead, which must approve the
+request itself (a command line needs every command approved). Use them when the same command
+will come again, such as a `curl` against a local server.
 
 `omp-task approve <id> --session` picks omp's "allow for this session" answer, which covers
 **that tool** (e.g. every later `eval`) for the rest of the job, not every tool. A later request

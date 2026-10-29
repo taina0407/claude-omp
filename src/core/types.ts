@@ -158,6 +158,14 @@ export interface FeedEntry {
 	data: Record<string, unknown>;
 }
 
+/** What a bash call sets besides its command; omp's approval prompt shows the command only. */
+export interface ShellCall {
+	/** The working directory the call asked for, as given; null for the worker's own. */
+	cwd: string | null;
+	/** Whether it sets environment variables. */
+	env: boolean;
+}
+
 export type ControlKind = "steer" | "abort" | "reply" | "approve";
 export type ApprovalDecision = "approve" | "session" | "deny";
 
@@ -166,6 +174,10 @@ export interface ControlRequest {
 	message?: string | undefined;
 	ref?: string | null | undefined;
 	decision?: ApprovalDecision | undefined;
+	/** approve: also add this allow rule to the job; it must approve the request. */
+	rule?: string | undefined;
+	/** approve: also add a rule matching exactly this request's command. */
+	same?: boolean | undefined;
 }
 
 export interface CommandResult {

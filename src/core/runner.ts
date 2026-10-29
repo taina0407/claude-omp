@@ -22,7 +22,13 @@ import {
 import { workerEnv } from "./env";
 import { changedFiles, gitRoot, type Snapshot, snapshot, withoutDir } from "./git";
 import { jobDir, preambleFile, stateDir } from "./paths";
-import { decideApproval } from "./policy";
+import {
+	type ApprovalRules,
+	approvalSubject,
+	decideApproval,
+	isShortened,
+	literalRule,
+} from "./policy";
 import type { Store } from "./store";
 import type {
 	ApprovalDecision,
@@ -32,6 +38,7 @@ import type {
 	JobStatus,
 	NoticeKind,
 	PendingKind,
+	ShellCall,
 	TerminalStatus,
 } from "./types";
 import { errorText, nowIso } from "./util";
@@ -62,6 +69,8 @@ interface LivePending {
 	tool: string | null;
 	text: string;
 	since: number;
+	/** For a bash approval: the call it is for, when known (see core/policy.ts). */
+	shell?: ShellCall | undefined;
 }
 
 /** Replaces `{{result:<job>}}` with that job's final report (for jobs run `--after` it). */
@@ -425,7 +434,7 @@ export class JobRunner {
 				}
 				break;
 			case "approval": {
-				const rule = decideApproval(e.tool, e.detail, this.#job);
+				const rule = decideApproval(e.tool, e.detail, this.#approvalRules(), e.shell);
 				if (rule) {
 					if (rule.decision === "deny") this.#denied.add(e.tool);
 					this.#session?.decide(e.ref, rule.decision);
@@ -434,7 +443,7 @@ export class JobRunner {
 					});
 					break;
 				}
-				this.#addPending(e.ref, "approval", e.detail, e.tool, e.options, null);
+				this.#addPending(e.ref, "approval", e.detail, e.tool, e.options, null, e.shell);
 				this.#feed("approval", `${e.tool}: ${e.detail}`.slice(0, 300), {
 					ref: e.ref,
 					tool: e.tool,
@@ -513,8 +522,9 @@ export class JobRunner {
 		tool: string | null,
 		options: string[],
 		context: string | null,
+		shell?: ShellCall,
 	): void {
-		this.#pending.set(ref, { kind, tool, text, since: performance.now() });
+		this.#pending.set(ref, { kind, tool, text, since: performance.now(), shell });
 		this.#store.addPending({
 			jobId: this.#jobId,
 			ref,
@@ -612,13 +622,80 @@ export class JobRunner {
 					this.#feed("answered", message.slice(0, 300), { ref: r });
 				} else {
 					const decision: ApprovalDecision = cmd.decision ?? "approve";
+					const rule = cmd.same ? literalRule(approvalSubject(item.text)) : cmd.rule?.trim();
+					if (rule) {
+						if (decision !== "approve") return { ok: false, error: "a rule goes with approve" };
+						const error = this.#addAllowRule(rule, item);
+						if (error) return { ok: false, error };
+					}
 					this.#resolvePending(r, null, decision);
-					this.#feed(`approval-${decision}`, item.text.slice(0, 200), { ref: r });
+					this.#feed(`approval-${decision}`, item.text.slice(0, 200), {
+						ref: r,
+						...(rule ? { rule } : {}),
+					});
+					if (rule) this.#recheckApprovals();
 				}
 				return { ok: true, ref: r };
 			}
 		}
 		return { ok: false, error: `unknown command ${String(cmd.kind)}` };
+	}
+
+	/** The job's rules and directories, as core/policy.ts takes them. */
+	#approvalRules(): ApprovalRules {
+		const job = this.#job;
+		return {
+			allow: job.allow,
+			deny: job.deny,
+			cwd: this.#workCwd,
+			roots: [job.cwd, job.worktreePath, job.repoRoot, ...job.addDirs].filter((d): d is string =>
+				Boolean(d),
+			),
+		};
+	}
+
+	/**
+	 * Adds an allow rule from `approve --rule/--same` to the job (a continuation inherits it), or
+	 * returns why not: the rule must approve the request it came with.
+	 */
+	#addAllowRule(rule: string, item: LivePending): string | null {
+		if (rule.startsWith("tool:")) return "use --session to approve a whole tool";
+		if (isShortened(item.text)) {
+			return "omp shortened this command in its prompt, so no rule can match it; approve it alone";
+		}
+		const rules = this.#approvalRules();
+		const decided = decideApproval(
+			item.tool ?? "",
+			item.text,
+			{ ...rules, allow: [...rules.allow, rule] },
+			item.shell,
+		);
+		if (decided?.decision === "deny") return `deny rule '${decided.rule}' matches this request`;
+		if (!decided) {
+			return (
+				`rule '${rule}' does not approve this request (a command line needs every command ` +
+				"approved: give a rule per command, or use --same)"
+			);
+		}
+		if (!this.#job.allow.includes(rule)) {
+			const allow = [...this.#job.allow, rule];
+			this.#store.updateJob(this.#jobId, { allow });
+			this.#job = { ...this.#job, allow };
+		}
+		return null;
+	}
+
+	/** Decides the open approvals a newly added rule now covers. */
+	#recheckApprovals(): void {
+		for (const [ref, item] of [...this.#pending]) {
+			if (item.kind !== "approval") continue;
+			const rule = decideApproval(item.tool ?? "", item.text, this.#approvalRules(), item.shell);
+			if (!rule) continue;
+			this.#resolvePending(ref, null, rule.decision);
+			this.#feed(`auto-${rule.decision}`, `${item.tool}: ${item.text}`.slice(0, 200), {
+				rule: rule.rule,
+			});
+		}
 	}
 
 	#resolvePending(

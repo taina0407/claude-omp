@@ -109,6 +109,8 @@ export const controlBody = z.object({
 	message: optionalString,
 	ref: z.string().nullable().optional(),
 	decision: z.enum(["approve", "session", "deny"]).optional(),
+	rule: optionalString,
+	same: z.boolean().optional(),
 });
 export type ControlBody = z.infer<typeof controlBody>;
 
@@ -129,6 +131,8 @@ export interface JobView {
 	queueReason?: string | null;
 	/** Things the creator should know (e.g. a group shared with another Claude session). */
 	warnings?: string[];
+	/** Shell commands approved as read-only (builtin:read-only) without asking. */
+	shellReads?: number;
 }
 
 export interface WaitResponse {

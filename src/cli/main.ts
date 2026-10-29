@@ -26,6 +26,7 @@ import { loadConfig } from "../core/config";
 import type { JobOptions } from "../core/jobs";
 import { COMPILED, configFile, ompBin, preambleFile, socketPath, stateDir } from "../core/paths";
 import { orderPlan, readPlanFile } from "../core/plan";
+import { READ_ONLY_RULE } from "../core/policy";
 import {
 	ALL_STATUSES,
 	type ApprovalDecision,
@@ -83,6 +84,7 @@ const TASK_OPTIONS = {
 	budget: { type: "string" },
 	allow: { type: "string", multiple: true },
 	deny: { type: "string", multiple: true },
+	"no-read-only": { type: "boolean" },
 	"stall-timeout": { type: "string" },
 	detach: { type: "boolean", short: "d" },
 	"max-wait": { type: "string" },
@@ -109,7 +111,8 @@ Commands:
   steer <job> [text...]    redirect a running job mid-flight (-b FILE for a long message)
   reply <job> [text...]    answer a running job's question (--ref to pick one, else the oldest)
   approve <job>            approve the oldest pending request (--ref to pick one; --session:
-                           also later calls of that tool; --deny)
+                           also later calls of that tool; --same: also this exact command
+                           again; --rule GLOB: also commands matching GLOB; --deny)
   cancel <job>             cancel a running, waiting, queued, blocked or interrupted job
   status <job>             show a job's state (--group G: the same as summary G; --json)
   result <job>             print a job's result (--full, --json)
@@ -151,6 +154,8 @@ Task options (run, continue):
   --budget USD          stop the job as over_budget once it spends more
   --allow GLOB          approve matching commands without asking (repeatable; 'tool:NAME')
   --deny GLOB           deny matching commands without asking (repeatable)
+  --no-read-only        ask about read-only shell commands too (ls, cat, grep, find, ...);
+                        same as --deny builtin:read-only
   --stall-timeout D     wake you when the worker shows no activity this long (default 10m)
   -d, --detach          return the job id at once instead of waiting
   --max-wait SECONDS    without --detach: stop waiting after N seconds (exit 3)
@@ -237,6 +242,7 @@ function jobOptions(values: Values, prompt: string): JobOptions {
 	if (str("budget")) opts.budget = str("budget");
 	if (values.allow) opts.allow = values.allow as string[];
 	if (values.deny) opts.deny = values.deny as string[];
+	if (values["no-read-only"]) opts.deny = [...(opts.deny ?? []), READ_ONLY_RULE];
 	if (str("stall-timeout")) opts.stallTimeout = str("stall-timeout");
 	return opts;
 }
@@ -294,7 +300,7 @@ async function waitJobs(
 		if (res.reason === "attention") {
 			const needs = res.jobs.filter((v) => wakeReasons(v).length);
 			for (const v of needs) {
-				emitJob(v.job, v.pending, opts.json, { notices: v.delivered });
+				emitJob(v.job, v.pending, opts.json, { notices: v.delivered, shellReads: v.shellReads });
 				out();
 			}
 			for (const v of res.jobs.filter((x) => !needs.includes(x))) {
@@ -309,7 +315,10 @@ async function waitJobs(
 		}
 		if (res.reason === "done") {
 			for (const v of res.jobs) {
-				emitJob(v.job, [], opts.json, { maxResultLines: WAKE_RESULT_LINES });
+				emitJob(v.job, [], opts.json, {
+					maxResultLines: WAKE_RESULT_LINES,
+					shellReads: v.shellReads,
+				});
 				out();
 			}
 			if (!opts.json) {
@@ -400,7 +409,7 @@ async function control(client: Client, ref: string, req: ControlRequest): Promis
 			? "steer sent"
 			: req.kind === "reply"
 				? "answer sent"
-				: `${req.decision ?? "approve"} sent`;
+				: `${req.decision ?? "approve"} sent${req.same ? " (and its command allowed from now on)" : req.rule ? ` (and rule '${req.rule}' added)` : ""}`;
 	out(res.ok ? okText : `error: ${res.error}`);
 	return res.ok ? 0 : EXIT_FAILED;
 }
@@ -560,21 +569,33 @@ const commands: Record<string, Command> = {
 		const { values, positionals } = parse(argv, {
 			session: { type: "boolean" },
 			deny: { type: "boolean" },
+			same: { type: "boolean" },
+			rule: { type: "string" },
 			ref: { type: "string" },
 		});
 		const [ref] = positionals;
 		if (!ref) throw new UsageError("approve needs a job id");
-		if (values.session && values.deny) throw new UsageError("--session and --deny are exclusive");
+		const chosen = ["session", "deny", "same", "rule"].filter((k) => values[k] !== undefined);
+		if (chosen.length > 1) {
+			throw new UsageError(`${chosen.map((k) => `--${k}`).join(" and ")} are exclusive`);
+		}
 		const decision: ApprovalDecision = values.deny
 			? "deny"
 			: values.session
 				? "session"
 				: "approve";
-		return control(await connect(), ref, {
+		const req: ControlRequest = {
 			kind: "approve",
 			decision,
 			ref: (values.ref as string | undefined) ?? null,
-		});
+		};
+		if (values.same) req.same = true;
+		if (values.rule !== undefined) {
+			const rule = (values.rule as string).trim();
+			if (!rule) throw new UsageError("--rule needs a glob");
+			req.rule = rule;
+		}
+		return control(await connect(), ref, req);
 	},
 
 	async cancel(argv) {
@@ -605,9 +626,9 @@ const commands: Record<string, Command> = {
 			return printSummary(values.group as string, Boolean(values.json));
 		}
 		if (!ref) throw new UsageError("status needs a job id (or --group NAME)");
-		const { job, pending, queueReason } = await getJob(await connect(), ref);
+		const { job, pending, queueReason, shellReads } = await getJob(await connect(), ref);
 		if (isTerminal(job.status) || job.status === "interrupted" || pending.length) {
-			emitJob(job, pending, Boolean(values.json));
+			emitJob(job, pending, Boolean(values.json), { shellReads });
 			return 0;
 		}
 		if (values.json) {
@@ -644,8 +665,8 @@ const commands: Record<string, Command> = {
 		});
 		const [ref] = positionals;
 		if (!ref) throw new UsageError("result needs a job id");
-		const { job, pending } = await getJob(await connect(), ref);
-		emitJob(job, pending, Boolean(values.json), { full: Boolean(values.full) });
+		const { job, pending, shellReads } = await getJob(await connect(), ref);
+		emitJob(job, pending, Boolean(values.json), { full: Boolean(values.full), shellReads });
 		return 0;
 	},
 

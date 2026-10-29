@@ -106,9 +106,10 @@ Do not change files.
 ```text
 Claude: Tôi sẽ khởi chạy một job chỉ đọc với phạm vi giới hạn và chờ ở chế độ nền.
         [Job hoàn tất và lệnh chờ chạy nền trả về.]
-Claude: Quy tắc từ chối được ưu tiên. Quy tắc cho phép theo mẫu lệnh từ chối
-        pipe và chuyển hướng; quy tắc cho phép toàn bộ công cụ bỏ qua bước
-        kiểm tra đó. Không có tệp nào thay đổi.
+Claude: Quy tắc từ chối được ưu tiên. Quy tắc cho phép theo mẫu lệnh kiểm tra
+        từng lệnh trong dòng lệnh và từ chối thay thế lệnh cũng như chuyển hướng
+        ra tệp; quy tắc cho phép toàn bộ công cụ bỏ qua bước kiểm tra đó. Không
+        có tệp nào thay đổi.
         Báo cáo gồm mô hình thực tế được chọn, chi phí đã ghi nhận và các bước tôi đã kiểm tra.
 ```
 
@@ -217,7 +218,7 @@ mô phỏng việc chờ.
 |---|---|
 | `run [text]`, `continue JOB [text]`, `resume JOB` | Khởi chạy; tạo job mới dùng phiên của một job đã hoàn tất; tiếp tục job bị gián đoạn với ID hiện có. |
 | `wait JOB…`, `wait --group NAME`, `watch JOB…` | Chờ sự kiện cần xử lý hoặc hoàn tất, hoặc truyền liên tục các sự kiện. |
-| `reply JOB TEXT`, `approve JOB [--session\|--deny]`, `steer JOB TEXT`, `cancel JOB` | Trả lời, phê duyệt/từ chối, điều chỉnh hướng hoặc hủy. |
+| `reply JOB TEXT`, `approve JOB [--same\|--rule GLOB\|--session\|--deny]`, `steer JOB TEXT`, `cancel JOB` | Trả lời, phê duyệt/từ chối, điều chỉnh hướng hoặc hủy. |
 | `status JOB`, `status --group NAME`, `result JOB [--full]`, `list [-C DIR] [--group NAME]`, `summary NAME` | Xem trạng thái, báo cáo, các job gần đây và chi tiêu của nhóm. |
 | `doctor`, `setup`, `daemon [status\|stop]`, `hook NAME`, `install-binary` | Chẩn đoán, cấu hình, điều khiển daemon, hook của plugin và cài tệp nhị phân. |
 
@@ -314,20 +315,37 @@ hoàn tác các thay đổi đã áp dụng.
 
 ### Quy tắc phê duyệt
 
-Có thể lặp lại `--allow GLOB` và `--deny GLOB`; chúng khớp với toàn bộ nội dung yêu cầu phê
-duyệt: `*` khớp mọi chuỗi và `?` khớp một ký tự. Quy tắc từ chối được ưu tiên. Quy tắc cho
-Chuỗi lệnh nối bằng `&&`, `||` hoặc `;` được tách thành từng lệnh (dấu phân cách nằm trong
-dấu nháy không tính): quy tắc cho phép theo mẫu lệnh như `--allow 'bun test*'` chỉ duyệt khi
-mọi lệnh đều khớp một quy tắc cho phép, và quy tắc từ chối khớp bất kỳ lệnh nào sẽ từ chối cả
-chuỗi. Quy tắc theo mẫu lệnh không bao giờ duyệt pipe, `&` chạy nền, chuyển hướng, thay thế
-lệnh, dấu backtick và ký tự xuống dòng. Các lệnh bash no-op `true` và `:` được duyệt mà không
-cần quy tắc.
+Có thể lặp lại `--allow GLOB` và `--deny GLOB`; chúng khớp với nội dung yêu cầu phê duyệt: `*`
+khớp mọi chuỗi và `?` khớp một ký tự (`\*`, `\?` và `\\` khớp đúng các ký tự đó). Quy tắc từ
+chối được ưu tiên. Dòng lệnh được tách tại `&&`, `||`, `;` và `|` thành từng lệnh (dấu phân
+cách nằm trong dấu nháy không tính): quy tắc cho phép theo mẫu lệnh như `--allow 'bun test*'`
+chỉ duyệt khi mọi lệnh đều khớp một quy tắc cho phép, nên nó duyệt `bun test 2>&1 | tail -50`
+chỉ khi `tail` cũng được duyệt, và không bao giờ duyệt `bun test | sh`; quy tắc từ chối khớp
+bất kỳ lệnh nào sẽ từ chối cả dòng. Quy tắc theo mẫu lệnh không bao giờ duyệt `&` chạy nền,
+chuyển hướng khác `2>/dev/null`, `>/dev/null`, `&>/dev/null` và `2>&1`, thay thế lệnh (`$(…)`,
+backtick), dấu ngoặc đơn hay ký tự xuống dòng ngoài dấu nháy. omp rút gọn lệnh dài hơn 2000 ký
+tự trong lời nhắc phê duyệt; không quy tắc cho phép nào duyệt các lệnh đó.
+
+Được duyệt mà không cần quy tắc: các lệnh bash no-op `true` và `:`, và trong quyền `edit`,
+**các lệnh chỉ đọc** (`builtin:read-only`): `ls`, `cat`, `head`, `tail` (không `-f`), `wc`,
+`grep`, `rg` (không `--pre`/`-z`), `find` (không `-exec`/`-ok`/`-delete`/`-fprint`), `sort`
+(không `-o`), `uniq` (một tệp), `sed -n 'N,Mp'`, `cut`, `tr`, `echo`, `stat`, `cd` và vài lệnh
+khác, nối bằng các toán tử ở trên. Các từ của lệnh phải là từ thường: không biến, không glob
+ngoài dấu nháy (`src/*.ts`), không ngoặc nhọn hay `~`. Đường dẫn tuyệt đối và `..` phải nằm trong
+thư mục của job, repository, worktree hoặc `--add-dir`; lời gọi bash phải chạy ở đó và không
+đặt biến môi trường. `git` không có trong danh sách, vì cấu hình của repository có thể khiến cả
+`git status` chạy một chương trình khác. Báo cáo của job đếm các lệnh này ở dòng "shell reads
+auto-approved": preamble của bên thực thi yêu cầu dùng công cụ read/search, nên con số cao nghĩa
+là bên thực thi đã bỏ qua yêu cầu đó. `--no-read-only` (hoặc `--deny builtin:read-only`, đặt được
+cả trong config defaults) tắt tính năng này.
 
 **Quy tắc cho phép toàn bộ công cụ như `--allow 'tool:bash'` bỏ qua bộ lọc đó.**
 Dùng mẫu lệnh có phạm vi hẹp, trừ khi chủ ý cấp quyền cho toàn bộ công cụ. Các quy tắc không
 kiểm tra hoạt động bên trong tập lệnh được cho phép.
 
-`approve JOB` phê duyệt một yêu cầu đang chờ; `--session` cho phép chính công cụ đó trong phần
+`approve JOB` phê duyệt một yêu cầu đang chờ; `--same` cho phép thêm đúng lệnh đó trong phần
+còn lại của job, `--rule GLOB` thêm một quy tắc cho phép, quy tắc này phải duyệt được chính yêu
+cầu đang chờ (cả hai được `continue` kế thừa), `--session` cho phép chính công cụ đó trong phần
 còn lại của job (yêu cầu cho công cụ khác vẫn phải hỏi), còn `--deny` từ chối yêu cầu.
 Mặc định, câu hỏi và yêu cầu phê duyệt hết hạn sau 20 phút, được điều khiển bằng `--answer-timeout` và `--approval-timeout`. Yêu cầu phê duyệt hết hạn
 sẽ bị từ chối; câu hỏi hết hạn cho phép bên thực thi tiếp tục dựa trên một giả định.

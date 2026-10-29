@@ -32,6 +32,7 @@ import { type Config, loadConfig } from "../core/config";
 import { createJob, NotFoundError, resolveJob } from "../core/jobs";
 import { socketPath } from "../core/paths";
 import { orderPlan } from "../core/plan";
+import { READ_ONLY_RULE } from "../core/policy";
 import { JobRunner } from "../core/runner";
 import { Store } from "../core/store";
 import { isActive, isTerminal, type Job } from "../core/types";
@@ -291,6 +292,8 @@ export class Daemon {
 
 	#view(job: Job): JobView {
 		const view: JobView = { job, pending: this.store.listPending(job.id) };
+		const shellReads = this.store.autoDecisions(job.id, READ_ONLY_RULE);
+		if (shellReads) view.shellReads = shellReads;
 		const reason = job.status === "queued" ? this.#queueReasons.get(job.id) : undefined;
 		if (reason) view.queueReason = reason;
 		return view;

@@ -94,6 +94,37 @@ describe("approvals", () => {
 		expect(approvals[0]?.options).toEqual(["Approve", "Approve bash for this session", "Deny"]);
 	});
 
+	test("a bash approval carries its call's cwd and env, which omp's prompt leaves out", () => {
+		// Recorded: omp announces the call before it asks.
+		const { of } = replay("v2-approval");
+		expect(of("approval").map((a) => a.shell)).toEqual([
+			{ cwd: null, env: false },
+			{ cwd: null, env: false },
+			{ cwd: null, env: false },
+		]);
+		const events: BackendEvent[] = [];
+		const protocol = new OmpRpcProtocol({
+			prompt: "p",
+			send: () => {},
+			emit: (e) => events.push(e),
+		});
+		const call = (id: string, args: Frame) => {
+			protocol.onFrame({ type: "tool_execution_start", toolName: "bash", toolCallId: id, args });
+			protocol.onFrame({
+				type: "extension_ui_request",
+				id: `ap-${id}`,
+				method: "select",
+				title: `Allow tool: bash\nCommand: ${String(args.command).slice(0, 20)}`,
+				options: ["Approve", "Deny"],
+			});
+		};
+		call("a", { command: "ls", cwd: "/tmp", env: { BASH_ENV: "x" } });
+		call("b", { command: "ls" });
+		call("c", { command: `cat ${"x".repeat(40)}` }); // shortened in the prompt: no match
+		const shells = events.flatMap((e) => (e.kind === "approval" ? [e.shell ?? null] : []));
+		expect(shells).toEqual([{ cwd: "/tmp", env: true }, { cwd: null, env: false }, null]);
+	});
+
 	test("decide() picks the matching option label", () => {
 		const { protocol, of, sent } = replay("v2-approval");
 		const refs = of("approval").map((a) => a.ref);

@@ -7,7 +7,7 @@
  * Observed protocol (omp 18.12): `ready` → negotiate v2 → commands → `prompt` → agent events →
  * `agent_end` → `prompt_result{status}` → `session_settled`.
  */
-import type { ApprovalDecision } from "../../core/types";
+import type { ApprovalDecision, ShellCall } from "../../core/types";
 import type { BackendEvent, HostTool } from "../types";
 import { type Frame, isRecord } from "./framing";
 import { ASK_TOOL, HOST_TOOL_NAMES, HOST_TOOLS, NOTIFY_TOOL } from "./host-tools";
@@ -78,11 +78,17 @@ interface ApprovalRequest {
 	options: string[];
 }
 
+interface StartedShellCall extends ShellCall {
+	command: string;
+}
+
 export class OmpRpcProtocol {
 	phase: Phase = "connecting";
 	sessionId: string | null = null;
 	readonly #opts: ProtocolOptions;
 	readonly #approvals = new Map<string, ApprovalRequest>();
+	/** bash calls that started and have not ended, by tool call id (omp asks after the start). */
+	readonly #shellCalls = new Map<string, StartedShellCall>();
 	#nextId = 0;
 	#promptId: string | null = null;
 	readonly #extraNames: ReadonlySet<string>;
@@ -234,17 +240,45 @@ export class OmpRpcProtocol {
 			this.#approvals.set(id, { options });
 			const newline = title.indexOf("\n");
 			const detail = newline >= 0 ? title.slice(newline + 1).trim() : tool;
-			this.#opts.emit({ kind: "approval", ref: id, tool, detail: detail || tool, options });
+			const shell = tool === "bash" ? this.#claimShellCall(detail) : undefined;
+			this.#opts.emit({
+				kind: "approval",
+				ref: id,
+				tool,
+				detail: detail || tool,
+				options,
+				...(shell ? { shell } : {}),
+			});
 			return;
 		}
 		// Any other interactive prompt: nobody is there to answer it.
 		this.#opts.send({ type: "extension_ui_response", id, cancelled: true });
 	}
 
+	/**
+	 * The latest started bash call whose full command is the one in this approval detail
+	 * ("Command: ..."), taken so a second approval of the same command gets the next one. None
+	 * when omp shortened the command or no call matches.
+	 */
+	#claimShellCall(detail: string): ShellCall | undefined {
+		const command = detail.replace(/^Command: /, "");
+		const match = [...this.#shellCalls].reverse().find(([, c]) => c.command === command);
+		if (!match) return undefined;
+		this.#shellCalls.delete(match[0]);
+		return { cwd: match[1].cwd, env: match[1].env };
+	}
+
 	#onToolStart(f: Frame): void {
 		const args = isRecord(f.args) ? f.args : {};
 		const detail = DETAIL_KEYS.map((k) => str(args[k])).find(Boolean) ?? str(f.intent);
 		const name = str(f.toolName);
+		if (name === "bash") {
+			this.#shellCalls.set(str(f.toolCallId), {
+				command: str(args.command),
+				cwd: str(args.cwd) || null,
+				env: isRecord(args.env) && Object.keys(args.env).length > 0,
+			});
+		}
 		const paths = editedPaths(name, args);
 		this.#opts.emit({
 			kind: "tool_start",
@@ -256,6 +290,7 @@ export class OmpRpcProtocol {
 	}
 
 	#onToolEnd(f: Frame): void {
+		this.#shellCalls.delete(str(f.toolCallId));
 		const result = isRecord(f.result) ? f.result : {};
 		this.#opts.emit({
 			kind: "tool_end",

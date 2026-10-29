@@ -453,6 +453,17 @@ export class Store {
 		return { jobId, seq, ts, kind, text, data };
 	}
 
+	/** How many requests of a job rules decided by themselves with this rule among those applied. */
+	autoDecisions(jobId: string, rule: string): number {
+		const row = this.db
+			.query(
+				`SELECT COUNT(*) AS n FROM feed WHERE job_id = ? AND kind LIKE 'auto-%'
+				AND (',' || REPLACE(json_extract(data, '$.rule'), ', ', ',') || ',') LIKE ?`,
+			)
+			.get(jobId, `%,${rule},%`) as { n: number };
+		return row.n;
+	}
+
 	feedSince(jobId: string, afterSeq: number): FeedEntry[] {
 		return (
 			this.db

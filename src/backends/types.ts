@@ -2,7 +2,7 @@
  * The contract between the job runner and a worker backend. v1 ships one backend (omp over its
  * RPC mode); an ACP backend can implement the same interface later.
  */
-import type { Access, ApprovalDecision } from "../core/types";
+import type { Access, ApprovalDecision, ShellCall } from "../core/types";
 
 /** A tool the host offers the worker on top of the built-in ones (JSON-schema parameters). */
 export interface HostTool {
@@ -57,7 +57,15 @@ export type BackendEvent =
 	| { kind: "question_withdrawn"; ref: string }
 	/** A call of one of the session's extra host tools; answer it with `answer(ref, …)`. */
 	| { kind: "tool_call"; ref: string; name: string; args: Record<string, unknown> }
-	| { kind: "approval"; ref: string; tool: string; detail: string; options: string[] }
+	| {
+			kind: "approval";
+			ref: string;
+			tool: string;
+			detail: string;
+			options: string[];
+			/** The bash call this approval is for, when its full command matched one that started. */
+			shell?: ShellCall;
+	  }
 	| { kind: "warning"; text: string }
 	| { kind: "end"; outcome: EndOutcome; error: string | null; exitCode: number | null };
 

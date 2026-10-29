@@ -42,7 +42,7 @@ function reviewOf(job: Job): unknown {
 	return job.review && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
 }
 
-export function jobJson(job: Job, pending: Pending[], full = false) {
+export function jobJson(job: Job, pending: Pending[], full = false, shellReads = 0) {
 	const file = join(jobDir(job.id), "result.md");
 	let result = existsSync(file) ? readFileSync(file, "utf8") : "";
 	let truncated = false;
@@ -68,6 +68,7 @@ export function jobJson(job: Job, pending: Pending[], full = false) {
 		changed_files: job.changedFiles,
 		other_changes: job.otherChanges,
 		denied_tools: job.deniedTools,
+		shell_reads_auto_approved: shellReads,
 		errors: job.errors,
 		isolate: job.isolate,
 		worktree: job.worktreePath,
@@ -99,7 +100,7 @@ export function printPending(jobId: string, pending: Pending[]): void {
 			out(`  answer:  omp-task reply ${jobId} "<answer>"`);
 		} else {
 			out(`APPROVAL needed (ref ${p.ref}): ${p.tool} — ${p.text}`);
-			out(`  decide:  omp-task approve ${jobId} [--session | --deny]`);
+			out(`  decide:  omp-task approve ${jobId} [--same | --rule GLOB | --session | --deny]`);
 		}
 	}
 }
@@ -134,9 +135,14 @@ export function emitJob(
 	job: Job,
 	pending: Pending[],
 	asJson: boolean,
-	opts: { full?: boolean; notices?: Notice[]; maxResultLines?: number } = {},
+	opts: {
+		full?: boolean;
+		notices?: Notice[];
+		maxResultLines?: number;
+		shellReads?: number | undefined;
+	} = {},
 ): void {
-	const data = jobJson(job, pending, opts.full);
+	const data = jobJson(job, pending, opts.full, opts.shellReads);
 	if (asJson) {
 		out(JSON.stringify(data, null, 2));
 		return;
@@ -175,6 +181,12 @@ export function emitJob(
 		);
 	}
 	if (job.deniedTools.length) out(`- denied: ${job.deniedTools.join(", ")}`);
+	if (opts.shellReads) {
+		out(
+			`- shell reads auto-approved: ${opts.shellReads} (read-only commands the worker ran in` +
+				" bash instead of its read/grep/find tools)",
+		);
+	}
 	for (const e of job.errors) out(`- error: ${e}`);
 	if (job.status === "interrupted") {
 		out();

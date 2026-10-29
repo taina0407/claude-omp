@@ -101,8 +101,9 @@ Do not change files.
 ```text
 Claude: I'll start a scoped read-only job and wait in the background.
         [The job finishes and the background wait returns.]
-Claude: Deny rules win. Command-pattern allows reject pipes and redirects;
-        tool-wide allows bypass that check. No files changed.
+Claude: Deny rules win. Command-pattern allows check every command of a line
+        and reject substitutions and redirects to files; tool-wide allows bypass
+        that check. No files changed.
         The report includes the resolved model, recorded cost, and my checks.
 ```
 
@@ -207,7 +208,7 @@ turn; terminal users can wait in the foreground. Do not poll status to emulate w
 |---|---|
 | `run [text]`, `continue JOB [text]`, `resume JOB` | Start; create a new job using a finished job's session; resume an interrupted job under its existing ID. |
 | `wait JOB…`, `wait --group NAME`, `watch JOB…` | Wait for attention/completion, or stream events. |
-| `reply JOB TEXT`, `approve JOB [--session\|--deny]`, `steer JOB TEXT`, `cancel JOB` | Answer, approve/deny, redirect, or abort. |
+| `reply JOB TEXT`, `approve JOB [--same\|--rule GLOB\|--session\|--deny]`, `steer JOB TEXT`, `cancel JOB` | Answer, approve/deny, redirect, or abort. |
 | `status JOB`, `status --group NAME`, `result JOB [--full]`, `list [-C DIR] [--group NAME]`, `summary NAME` | Inspect state, reports, recent jobs, and group spending. |
 | `doctor`, `setup`, `daemon [status\|stop]`, `hook NAME`, `install-binary` | Diagnostics, configuration, daemon control, plugin hooks, and binary installation. |
 
@@ -295,20 +296,36 @@ without applying them; neither is an undo command for changes already applied.
 
 ### Approval rules
 
-Repeatable `--allow GLOB` and `--deny GLOB` match the whole approval subject: `*` matches any
-text and `?` one character. Deny wins. A command list joined with `&&`, `||` or `;` is split
-into its commands (separators inside quotes do not count): a command-pattern allow such as
-`--allow 'bun test*'` approves it only when every command matches an allow rule, and a deny rule
-that matches any one of them denies it. Command-pattern allows never approve pipes, background
-`&`, redirects, command substitutions, backticks, or newlines. The bash no-ops `true` and `:`
-are approved without a rule.
+Repeatable `--allow GLOB` and `--deny GLOB` match the approval subject: `*` matches any text and
+`?` one character (`\*`, `\?` and `\\` match those characters). Deny wins. A command line is
+split at `&&`, `||`, `;` and `|` into its commands (separators inside quotes do not count): a
+command-pattern allow such as `--allow 'bun test*'` approves it only when every command matches
+an allow rule, so it approves `bun test 2>&1 | tail -50` only if `tail` is approved too, and
+never `bun test | sh`; a deny rule that matches any one of them denies it. Command-pattern allows
+never approve background `&`, redirects other than `2>/dev/null`, `>/dev/null`, `&>/dev/null`
+and `2>&1`, command substitutions (`$(…)`, backticks), parentheses, or unquoted newlines. omp
+shortens commands longer than 2000 characters in its prompt; no allow rule approves those.
+
+Approved without a rule: the bash no-ops `true` and `:`, and in `edit` access **commands that
+only read** (`builtin:read-only`): `ls`, `cat`, `head`, `tail` (not `-f`), `wc`, `grep`, `rg`
+(not `--pre`/`-z`), `find` (not `-exec`/`-ok`/`-delete`/`-fprint`), `sort` (not `-o`), `uniq`
+(one file), `sed -n 'N,Mp'`, `cut`, `tr`, `echo`, `stat`, `cd` and a few more, joined by the
+operators above. Their words must be plain: no variables, unquoted globs (`src/*.ts`), braces or
+`~`. Absolute paths and `..` must stay inside the job's directory, repository, worktree or
+`--add-dir`, the bash call must run there and set no environment variables. `git` is not on the
+list, since repository configuration can make even `git status` run a helper. The job report
+counts these as "shell reads auto-approved": the worker preamble asks for the read/search tools
+instead, so a high count means the worker ignored it. `--no-read-only` (or
+`--deny builtin:read-only`, also in config defaults) turns this off.
 
 **Whole-tool allows such as `--allow 'tool:bash'` bypass that filter.** Use narrow
 command patterns unless you intend to grant the entire tool. Rules do not inspect what a
 permitted script does internally.
 
-`approve JOB` approves one pending request; `--session` allows that same tool for the rest of
-the job (a request for another tool still asks), and `--deny` rejects it. Questions and approvals expire after 20 minutes by default, controlled
+`approve JOB` approves one pending request; `--same` also allows that exact command for the rest
+of the job, `--rule GLOB` adds an allow rule that must approve the request (both carry over to
+`continue`), `--session` allows that same tool for the rest of the job (a request for another
+tool still asks), and `--deny` rejects it. Questions and approvals expire after 20 minutes by default, controlled
 by `--answer-timeout` and `--approval-timeout`. Expired approvals are denied; expired questions
 release the worker to proceed on an assumption.
 

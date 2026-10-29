@@ -64,9 +64,12 @@ when it needs this conversation's nuance, touches files you are editing, or is a
    [--allow ...] [--budget 0.50]`, then the background `wait`.
 5. **When woken**, the job block above `WAKE:` shows what is needed and the exact command:
    - question → `omp-task reply <id> "<answer>"` (ask the user only if it is theirs to decide);
-   - approval → `omp-task approve <id>` for what the brief needs; `--session` also allows every
-     later call of **that same tool** for the rest of the job (a request for another tool still
-     asks); `--deny` for anything destructive, out of scope or touching network/global state.
+   - approval → `omp-task approve <id>` for what the brief needs; `--same` when that exact
+     command will come again, `--rule 'GLOB'` for a family of them (it must match this request);
+     `--session` also allows every later call of **that same tool** for the rest of the job (a
+     request for another tool still asks); `--deny` for anything destructive, out of scope or
+     touching network/global state. Plain read-only commands (`ls`, `cat`, `grep`, `find`, ...)
+     never reach you: they are approved by themselves;
      Without `--ref`, `reply`/`approve` act on the oldest open item of that kind; to pick another,
      pass `--ref <ref>` from its `PENDING:` line;
    - checkpoint → look at what it reports; `omp-task steer <id> "..."` only if it drifts. A
