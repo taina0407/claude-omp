@@ -276,6 +276,12 @@ repository. Edit access does not automatically isolate. Use explicit `--isolate 
 when isolation is required; it rejects an unsuitable repository. `--isolate none` forces
 the checkout.
 
+A checkout job shares the directory with you and with any other session working there. Its
+report lists, apart from its changed files, those its edit/write tools did not touch: made by
+its shell commands or by someone else. Check those before reverting or deleting them. Workers
+do not inherit the Claude Code session or terminal pane (Orca, tmux) of whichever session
+started the daemon; each carries only its own job's session id.
+
 Worktrees start from HEAD under the state directory, on branch `omp/JOB`. Existing dirty
 changes are absent unless `--carry-dirty` copies them, including untracked non-ignored files;
 they are committed on the job's branch as its starting point, so `diff` and `apply` show only
@@ -420,7 +426,8 @@ means answer with `reply`, decide an `approve` request, inspect a checkpoint/sta
 --last 40` prints the latest events and exits, even while the job runs; a plain `watch` follows
 it until it ends.
 
-For `queued` jobs, inspect concurrency and writer limits. `blocked` waits for dependencies;
+For `queued` jobs, the `queued:` line of `run --detach` and `status` names the limit or the job
+holding the slot (also when it belongs to another Claude session). `blocked` waits for dependencies;
 `skipped` means a required dependency did not complete. For `over_budget`, inspect the job,
 group, and daily spending using `status`, `result`, and `summary` before retrying.
 

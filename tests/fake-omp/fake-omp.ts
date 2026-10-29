@@ -6,6 +6,8 @@
  *
  * Behaviour is driven by words in the prompt:
  *   WRITE <name>  create <name> in the cwd (write tool)
+ *   SHELLWRITE <name>  create <name> in the cwd through a bash call (no edit/write tool)
+ *   ENV           write the worker's environment as JSON to $FAKE_OMP_ENV_LOG
  *   ASK           ask_orchestrator (after omp's own approval prompt for it); answer goes in the text
  *   BASH          request approval for `make test`; the decision goes in the text
  *   BASHCHAIN     the same for `make test && rm -rf build`
@@ -181,6 +183,15 @@ async function runPrompt(prompt: Frame): Promise<void> {
 				isError: false,
 				result: {},
 			});
+		} else if (word === "SHELLWRITE") {
+			const call = { toolName: "bash", toolCallId: "sw" };
+			emit({ type: "tool_execution_start", ...call, args: { command: `touch ${next}` } });
+			writeFileSync(next, "written by a shell command\n");
+			emit({ type: "tool_execution_end", ...call, isError: false, result: {} });
+		} else if (word === "ENV") {
+			if (process.env.FAKE_OMP_ENV_LOG) {
+				writeFileSync(process.env.FAKE_OMP_ENV_LOG, JSON.stringify(process.env));
+			}
 		} else if (word === "NOTIFY" || word === "CHECKPOINT") {
 			const checkpoint = word === "CHECKPOINT";
 			emit({

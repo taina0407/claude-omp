@@ -15,6 +15,25 @@ import { ASK_TOOL, HOST_TOOL_NAMES, HOST_TOOLS, NOTIFY_TOOL } from "./host-tools
 /** Feed-worthy tools: the ones that change things or start sub-work. */
 const DETAIL_KEYS = ["path", "command", "description", "pattern", "url"] as const;
 
+/** Tools that change files; their paths tell the worker's own edits from anyone else's. */
+const EDIT_TOOLS: ReadonlySet<string> = new Set(["edit", "write"]);
+/** File headers of a patch-style `edit` input: `[path#HASH]` or `*** Update File: path`. */
+const PATCH_FILE =
+	/^(?:\[([^\]\n#]+)(?:#[0-9A-Fa-f]+)?\]|\*\*\* (?:Add|Update|Delete) File: (.+)|\*\*\* Move to: (.+))$/gm;
+
+/** The files an edit/write call names (as given: relative to the worker's cwd, or absolute). */
+export function editedPaths(tool: string, args: Record<string, unknown>): string[] {
+	if (!EDIT_TOOLS.has(tool)) return [];
+	const paths = new Set<string>();
+	const path = str(args.path).trim();
+	if (path) paths.add(path);
+	for (const m of str(args.input).matchAll(PATCH_FILE)) {
+		const p = (m[1] ?? m[2] ?? m[3] ?? "").trim();
+		if (p) paths.add(p);
+	}
+	return [...paths];
+}
+
 /** omp refuses longer input lines; a brief this large is handed over as a file instead. */
 export const MAX_PROMPT_BYTES = 900 * 1024;
 
@@ -225,7 +244,15 @@ export class OmpRpcProtocol {
 	#onToolStart(f: Frame): void {
 		const args = isRecord(f.args) ? f.args : {};
 		const detail = DETAIL_KEYS.map((k) => str(args[k])).find(Boolean) ?? str(f.intent);
-		this.#opts.emit({ kind: "tool_start", id: str(f.toolCallId), name: str(f.toolName), detail });
+		const name = str(f.toolName);
+		const paths = editedPaths(name, args);
+		this.#opts.emit({
+			kind: "tool_start",
+			id: str(f.toolCallId),
+			name,
+			detail,
+			...(paths.length ? { paths } : {}),
+		});
 	}
 
 	#onToolEnd(f: Frame): void {

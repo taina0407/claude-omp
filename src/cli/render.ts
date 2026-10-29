@@ -66,6 +66,7 @@ export function jobJson(job: Job, pending: Pending[], full = false) {
 		tools: job.tools,
 		tool_errors: job.toolErrors,
 		changed_files: job.changedFiles,
+		other_changes: job.otherChanges,
 		denied_tools: job.deniedTools,
 		errors: job.errors,
 		isolate: job.isolate,
@@ -166,6 +167,13 @@ export function emitJob(
 	if (job.changedFiles !== null) {
 		out(`- changed files: ${job.changedFiles.length ? job.changedFiles.join(", ") : "(none)"}`);
 	}
+	if (job.otherChanges?.length) {
+		out(
+			`- not changed by the worker's edit/write tools: ${job.otherChanges.join(", ")}` +
+				" (its shell commands, or someone else in this checkout, such as another session:" +
+				" check before you revert or delete them)",
+		);
+	}
 	if (job.deniedTools.length) out(`- denied: ${job.deniedTools.join(", ")}`);
 	for (const e of job.errors) out(`- error: ${e}`);
 	if (job.status === "interrupted") {
@@ -208,6 +216,8 @@ export function formatFeed(e: Pick<FeedEntry, "jobId" | "ts" | "kind" | "text" |
 	} else if (e.kind === "done") {
 		const cf = e.data.changed_files;
 		if (Array.isArray(cf)) line += `  changed: ${cf.join(", ") || "(none)"}`;
+		const other = e.data.other_changes;
+		if (Array.isArray(other) && other.length) line += `  not by worker edits: ${other.join(", ")}`;
 		line += `  → omp-task result ${e.jobId}`;
 	}
 	return line;

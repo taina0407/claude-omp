@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import type { FeedEvent, Health } from "../api/schema";
+import { detachedEnv } from "../core/env";
 import { cliCommand, socketPath, stateDir } from "../core/paths";
 import { UsageError } from "../core/util";
 import { VERSION } from "../version";
@@ -99,7 +100,8 @@ function spawnDaemon(): void {
 	const child = spawn(bin, [...args, "daemon"], {
 		detached: true,
 		stdio: ["ignore", out, out],
-		env: process.env,
+		// The daemon outlives this session and serves every other one: it must not carry its identity.
+		env: detachedEnv(process.env),
 	});
 	closeSync(out);
 	child.unref();

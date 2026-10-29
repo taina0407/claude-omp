@@ -137,8 +137,8 @@ export class Sandbox {
 		return JSON.parse((await this.cli(["run", "--json", ...args], ok)).stdout) as JobJson;
 	}
 
-	async start(args: string[]): Promise<string> {
-		const { stdout } = await this.cli(["run", "--detach", "--json", ...args]);
+	async start(args: string[], env: Record<string, string> = {}): Promise<string> {
+		const { stdout } = await this.cli(["run", "--detach", "--json", ...args], [0], env);
 		return (JSON.parse(stdout) as { id: string }).id;
 	}
 

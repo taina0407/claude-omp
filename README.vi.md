@@ -292,6 +292,13 @@ kho mã đáp ứng điều kiện trên. Quyền chỉnh sửa không tự đ�
 `--isolate worktree` khi cần tách biệt; tùy chọn này từ chối kho mã không phù hợp.
 `--isolate none` buộc dùng bản checkout hiện tại.
 
+Job chạy trong checkout dùng chung thư mục với bạn và với mọi session khác đang làm việc ở đó.
+Ngoài danh sách file đã thay đổi, báo cáo của job còn liệt kê riêng những file mà tool
+edit/write của worker không đụng tới: do lệnh shell của nó hoặc do người khác tạo ra. Hãy kiểm
+tra các file đó trước khi revert hay xoá. Worker không kế thừa session Claude Code hay pane
+terminal (Orca, tmux) của session đã khởi động daemon; mỗi worker chỉ mang session id của job
+của chính nó.
+
 Worktree bắt đầu từ HEAD, nằm dưới thư mục trạng thái, trên nhánh `omp/JOB`. Các thay đổi
 chưa commit hiện có không được đưa vào, trừ khi dùng `--carry-dirty` để sao chép chúng, kể
 cả các tệp chưa được theo dõi và không bị bỏ qua; chúng được commit trên nhánh của job làm
@@ -447,7 +454,8 @@ ngừng tiến triển hoặc dùng `resume JOB --detach` cho job bị gián đo
 lệnh `wait` cũ. `watch JOB --verbose --last 40` in các sự kiện mới nhất rồi thoát, kể cả khi
 job còn chạy; `watch` thông thường theo dõi đến khi job kết thúc.
 
-Với job `queued`, kiểm tra giới hạn số job chạy đồng thời và số job ghi. `blocked` là đang
+Với job `queued`, dòng `queued:` của `run --detach` và `status` cho biết giới hạn nào hoặc
+job nào đang giữ chỗ (kể cả khi job đó thuộc một session Claude khác). `blocked` là đang
 chờ phụ thuộc; `skipped` nghĩa là một phụ thuộc bắt buộc không hoàn tất. Với `over_budget`,
 xem chi tiêu của job, nhóm và trong ngày bằng `status`, `result` và `summary` trước khi thử lại.
 

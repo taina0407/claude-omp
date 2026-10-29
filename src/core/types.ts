@@ -100,6 +100,11 @@ export interface Job extends JobSpec {
 	errors: string[];
 	/** null when the cwd is not a git repo, so changes cannot be detected. */
 	changedFiles: string[] | null;
+	/**
+	 * Changed files the worker's edit/write tools never touched: its shell commands made them, or
+	 * another process (the user, another session) did. null when changes cannot be detected.
+	 */
+	otherChanges: string[] | null;
 	exitCode: number | null;
 	isolate: Isolation;
 	carryDirty: boolean;

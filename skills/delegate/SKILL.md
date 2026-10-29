@@ -78,7 +78,10 @@ when it needs this conversation's nuance, touches files you are editing, or is a
    <id> --full` has the rest. The report is a claim. Read the real changes: for a checkout job
    `git status --short` (new files are untracked) and `git diff HEAD -- <files>`; for a worktree
    job `omp-task diff <id>`. In a checkout job, `changed files` also lists anything else that
-   changed in the checkout while it ran (your own edits included). Check nothing outside the
+   changed in the checkout while it ran (your own edits included). Files under `not changed by
+   the worker's edit/write tools` came from its shell commands or from someone else working in
+   the same checkout (the user, another Claude session, an omp session): never revert or delete
+   those without checking who made them; ask the user when unsure. Check nothing outside the
    fence changed, and run the "done when"
    command yourself, for a worktree job inside its worktree (the `- worktree:` path). For a
    second pair of eyes: `omp-task review --job <id> --detach` (a worktree job; `--staged` /
@@ -102,14 +105,17 @@ when it needs this conversation's nuance, touches files you are editing, or is a
 
 Independent tasks: start each with `-g <group>` and wait once with `omp-task wait --group
 <group>`. Use a fresh group name for each fan-out (`auth-refactor-2`): `wait --group`, `summary`
-and group budgets cover every job ever created under that name. Dependent tasks: `--after <id>` (skipped if the dependency fails, unless
+and group budgets cover every job ever created under that name. Group names are shared by
+every Claude session: `wait --group` only covers this session's jobs, and a `warning:` when you
+start a job means another session uses the name too; pick another. Dependent tasks: `--after <id>` (skipped if the dependency fails, unless
 `--after-any-outcome`); `{{result:<id>}}` in a brief pastes that job's report. For more than
 three tasks write a plan file: [references/fan-out.md](references/fan-out.md).
 `omp-task status --group <group>` (same as `summary`) shows status, cost and changed files.
 
 ## Statuses
 
-`blocked` waits for dependencies, `queued` for a free slot, `starting`/`running` work,
+`blocked` waits for dependencies, `queued` for a free slot (the `queued:` line says which limit
+or which job, possibly another session's, holds it), `starting`/`running` work,
 `waiting` needs you, `interrupted` needs `resume`. Ends: `completed` (still review it),
 `failed`, `cancelled`, `timeout`, `skipped`, `over_budget`. `omp-task list` lists recent jobs
 (`-C <dir>`: only those whose working directory is exactly `<dir>`). Each job block shows its

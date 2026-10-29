@@ -3,7 +3,7 @@
  * the M0 recordings showed. Every test gets its own state dir and so its own daemon.
  */
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { argAfter, type JobJson, type Result, Sandbox } from "./helpers";
 
@@ -23,7 +23,11 @@ afterEach(async () => {
 	await sb.dispose();
 });
 
-const cli = (args: string[], ok: number[] | null = [0]): Promise<Result> => sb.cli(args, ok);
+const cli = (
+	args: string[],
+	ok: number[] | null = [0],
+	env: Record<string, string> = {},
+): Promise<Result> => sb.cli(args, ok, env);
 const runJson = (args: string[], ok = [0]): Promise<JobJson> => sb.runJson(args, ok);
 const start = (args: string[]): Promise<string> => sb.start(args);
 const waitJson = (job: string, extra: string[] = [], ok = [0, 1]) => sb.waitJson(job, extra, ok);
@@ -34,6 +38,41 @@ describe("basics", () => {
 	test("a read-access job reports no changed files, whoever edited the checkout", async () => {
 		const out = await runJson(["--access", "read", "WRITE new.txt please"]);
 		expect(out.changed_files).toEqual([]);
+	});
+
+	test("changes the worker's edit/write tools did not make are reported apart", async () => {
+		const out = await runJson(["WRITE a.txt SHELLWRITE b.txt"]);
+		expect(out.changed_files).toEqual(["a.txt", "b.txt"]);
+		expect(out.other_changes).toEqual(["b.txt"]);
+		const text = (await cli(["result", out.id as string])).stdout;
+		expect(text).toContain("not changed by the worker's edit/write tools: b.txt");
+	});
+
+	test("the worker does not inherit the identity of the session that started the daemon", async () => {
+		const log = join(base, "worker-env.json");
+		await cli(["run", "--json", "ENV"], [0], {
+			FAKE_OMP_ENV_LOG: log,
+			CLAUDECODE: "1",
+			CLAUDE_CODE_SESSION_ID: "starter",
+			CLAUDE_CODE_MESSAGING_SOCKET: "/run/starter.sock",
+			OMP_TASK_CLAUDE_SESSION: "starter",
+			ORCA_PANE_KEY: "starter-pane",
+			TMUX_PANE: "%1",
+		});
+		let worker = JSON.parse(readFileSync(log, "utf8")) as Record<string, string>;
+		expect(worker.OMP_TASK_CLAUDE_SESSION).toBe("starter");
+		for (const k of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET"]) {
+			expect(worker[k]).toBeUndefined();
+		}
+		expect(worker.ORCA_PANE_KEY).toBeUndefined();
+		expect(worker.TMUX_PANE).toBeUndefined();
+		// The daemon is still the one the first session started; another session's job gets its own id.
+		await cli(["run", "--json", "ENV"], [0], {
+			FAKE_OMP_ENV_LOG: log,
+			OMP_TASK_CLAUDE_SESSION: "second",
+		});
+		worker = JSON.parse(readFileSync(log, "utf8")) as Record<string, string>;
+		expect(worker.OMP_TASK_CLAUDE_SESSION).toBe("second");
 	});
 
 	test("run reports result and changed files", async () => {

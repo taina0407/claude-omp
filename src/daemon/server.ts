@@ -54,6 +54,25 @@ const HOUSEKEEPING_MS = 24 * 3600_000;
 /** Notices `wait` returns for; `--no-checkpoint` leaves checkpoints in the feed only. */
 const NOTICE_KINDS = ["checkpoint", "stalled"] as const;
 
+/** Whether a job belongs to this Claude session, or to none (started outside Claude Code). */
+function sameSession(job: Job, session: string): boolean {
+	return job.claudeSession === null || job.claudeSession === session;
+}
+
+/** A warning when the job's group also holds unfinished jobs of another Claude session. */
+function groupSharedWith(store: Store, job: Job): string | null {
+	if (!job.groupName || !job.claudeSession) return null;
+	const others = store
+		.listJobs({ limit: 10_000, group: job.groupName })
+		.filter((j) => !sameSession(j, job.claudeSession as string) && !isTerminal(j.status));
+	if (!others.length) return null;
+	return (
+		`group '${job.groupName}' also has ${others.length} unfinished job(s) of another Claude ` +
+		`session (${others.map((j) => j.id).join(", ")}); \`wait --group\` covers only this ` +
+		"session's jobs, but group limits and budgets are shared. A group name of your own avoids that."
+	);
+}
+
 /** The config, or an empty one when it is broken (the CLI reports that on its own commands). */
 function safeConfig(): Config {
 	try {
@@ -103,6 +122,8 @@ export class Daemon {
 	readonly store = new Store();
 	readonly #runners = new Map<string, JobRunner>();
 	readonly #waiters = new Set<() => void>();
+	/** Why each queued job has not started yet, from the last scheduling pass. */
+	readonly #queueReasons = new Map<string, string>();
 	readonly #startedAt = nowIso();
 	#server: Server<undefined> | null = null;
 	/** Open `wait` and `watch` requests: the daemon is not idle while anyone is listening. */
@@ -211,8 +232,12 @@ export class Daemon {
 				this.store.transition(id, ["blocked"], "queued");
 				this.store.appendFeed(id, "info", "dependencies done; queued");
 			} else if (d.action === "start") {
+				this.#queueReasons.delete(id);
 				this.#start(this.store.getJob(id) as Job, false);
+			} else if (d.action === "hold") {
+				this.#queueReasons.set(id, d.reason);
 			} else {
+				this.#queueReasons.delete(id);
 				this.#endUnstarted(
 					this.store.getJob(id) as Job,
 					d.action === "skip" ? "skipped" : "over_budget",
@@ -265,7 +290,10 @@ export class Daemon {
 	}
 
 	#view(job: Job): JobView {
-		return { job, pending: this.store.listPending(job.id) };
+		const view: JobView = { job, pending: this.store.listPending(job.id) };
+		const reason = job.status === "queued" ? this.#queueReasons.get(job.id) : undefined;
+		if (reason) view.queueReason = reason;
+		return view;
 	}
 
 	/** Resolves on the next change to any job, or after `ms`. */
@@ -386,9 +414,16 @@ export class Daemon {
 				throw new HttpError(409, `job ${parent.id} has no omp session to continue`);
 			}
 		}
-		const job = createJob(this.store, b.options, parent);
+		return this.#created(createJob(this.store, b.options, parent));
+	}
+
+	/** The answer to a request that created a job: scheduled, with any warning for its creator. */
+	#created(job: Job): Response {
 		this.#schedule();
-		return json(this.#view(this.store.getJob(job.id) as Job), 201);
+		const view = this.#view(this.store.getJob(job.id) as Job);
+		const shared = groupSharedWith(this.store, job);
+		if (shared) view.warnings = [shared];
+		return json(view, 201);
 	}
 
 	/** A Claude Code session ended; with `cancel`, its unfinished jobs go with it. */
@@ -424,8 +459,7 @@ export class Daemon {
 			focus: b.focus ?? null,
 			options: b.options,
 		});
-		this.#schedule();
-		return json(this.#view(this.store.getJob(job.id) as Job), 201);
+		return this.#created(job);
 	}
 
 	/** Creates a plan's jobs in dependency order; on any error none of them stays queued. */
@@ -573,9 +607,20 @@ export class Daemon {
 		const deadline = performance.now() + timeoutS * 1000;
 		const jobIds = ids.map((r) => resolveJob(this.store, r).id);
 		if (group) {
-			const members = this.store.listJobs({ limit: 10_000, group }).map((j) => j.id);
-			if (!members.length) throw new NotFoundError(`no jobs in group '${group}'`);
-			jobIds.push(...members.filter((id) => !jobIds.includes(id)).reverse());
+			const all = this.store.listJobs({ limit: 10_000, group });
+			if (!all.length) throw new NotFoundError(`no jobs in group '${group}'`);
+			// Group names are global: a Claude session waits only for its own jobs (and those that
+			// belong to no session), never for another session's that happen to share the name.
+			const session = url.searchParams.get("session");
+			const members = session ? all.filter((j) => sameSession(j, session)) : all;
+			if (!members.length) {
+				throw new NotFoundError(
+					`group '${group}' has ${all.length} job(s), all of other Claude sessions; ` +
+						"wait for them by id, or use a group name of your own",
+				);
+			}
+			const ids = members.map((j) => j.id);
+			jobIds.push(...ids.filter((id) => !jobIds.includes(id)).reverse());
 		}
 		this.#clients++;
 		try {

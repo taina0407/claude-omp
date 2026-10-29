@@ -3,8 +3,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { editedPaths } from "../src/backends/omp-rpc/protocol";
 import { ompVersionOk } from "../src/cli/main";
 import { pickSetting } from "../src/core/config";
+import { detachedEnv, workerEnv } from "../src/core/env";
 import { Store } from "../src/core/store";
 import type { JobSpec } from "../src/core/types";
 import { firstLine, newJobId, parseDuration, shellSplit, UsageError } from "../src/core/util";
@@ -144,6 +146,22 @@ describe("Store", () => {
 		}
 	});
 
+	test("a database of layout omp-task/1 is upgraded in place, keeping its jobs", () => {
+		withStore((s, path) => {
+			s.createJob("20260101-000000-abcd", spec);
+			s.db.run("ALTER TABLE jobs DROP COLUMN other_changes");
+			s.db.run("UPDATE meta SET value = 'omp-task/1' WHERE key = 'schema'");
+			const again = new Store(path);
+			try {
+				expect(again.getJob("20260101-000000-abcd")?.otherChanges).toBeNull();
+				again.updateJob("20260101-000000-abcd", { otherChanges: ["x.txt"] });
+				expect(again.getJob("20260101-000000-abcd")?.otherChanges).toEqual(["x.txt"]);
+			} finally {
+				again.close();
+			}
+		});
+	});
+
 	test("finds jobs by unique prefix or suffix", () => {
 		withStore((s) => {
 			s.createJob("20260101-000000-abcd", spec);
@@ -193,4 +211,71 @@ test("doctor accepts omp 18.12 or later", () => {
 	expect(ompVersionOk("omp/18.11.9")).toBe(false);
 	expect(ompVersionOk("omp/17.40.0")).toBe(false);
 	expect(ompVersionOk("")).toBe(true);
+});
+
+describe("worker environment", () => {
+	const env = {
+		PATH: "/bin",
+		HOME: "/home/u",
+		ANTHROPIC_API_KEY: "k",
+		CLAUDE_CONFIG_DIR: "/c",
+		CLAUDECODE: "1",
+		CLAUDE_CODE_SESSION_ID: "starter",
+		CLAUDE_CODE_MESSAGING_SOCKET: "/run/cc.sock",
+		CLAUDE_PID: "42",
+		OMP_TASK_CLAUDE_SESSION: "starter",
+		ORCA_PANE_KEY: "pane",
+		ORCA_TAB_ID: "tab",
+		TMUX: "/tmp/tmux-1000/default,1,0",
+		TMUX_PANE: "%11",
+	};
+
+	test("the daemon drops the identity of the session and pane that started it", () => {
+		expect(detachedEnv(env)).toEqual({
+			PATH: "/bin",
+			HOME: "/home/u",
+			ANTHROPIC_API_KEY: "k",
+			CLAUDE_CONFIG_DIR: "/c",
+			TMUX: "/tmp/tmux-1000/default,1,0",
+		});
+	});
+
+	test("a worker carries its own job's Claude session, or none", () => {
+		expect(workerEnv(env, "mine").OMP_TASK_CLAUDE_SESSION).toBe("mine");
+		expect(workerEnv(env, null).OMP_TASK_CLAUDE_SESSION).toBeUndefined();
+		expect(workerEnv(env, "mine").CLAUDE_CODE_SESSION_ID).toBeUndefined();
+	});
+});
+
+describe("editedPaths", () => {
+	test("edit and write calls name their path", () => {
+		expect(editedPaths("edit", { path: "a.ts", old_string: "x", new_string: "y" })).toEqual([
+			"a.ts",
+		]);
+		expect(editedPaths("write", { path: "/abs/b.ts", content: "" })).toEqual(["/abs/b.ts"]);
+	});
+
+	test("a patch-style edit names every file it touches", () => {
+		const input = [
+			"*** Begin Patch",
+			"[README.md#5BBF]",
+			"PUT 1.=1:",
+			"+x",
+			"*** Update File: src/a.ts",
+			"*** Add File: src/new.ts",
+			"*** Delete File: old.ts",
+			"*** End Patch",
+		].join("\n");
+		expect(editedPaths("edit", { input })).toEqual([
+			"README.md",
+			"src/a.ts",
+			"src/new.ts",
+			"old.ts",
+		]);
+	});
+
+	test("other tools change nothing the runner attributes", () => {
+		expect(editedPaths("bash", { command: "touch x" })).toEqual([]);
+		expect(editedPaths("read", { path: "a.ts" })).toEqual([]);
+	});
 });

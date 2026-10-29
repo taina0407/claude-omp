@@ -59,6 +59,7 @@ class OmpRpcSession implements BackendSession {
 		try {
 			this.#proc = Bun.spawn(argv, {
 				cwd: spec.cwd,
+				...(spec.env ? { env: spec.env } : {}),
 				stdin: "pipe",
 				stdout: "pipe",
 				stderr: stderrFd,

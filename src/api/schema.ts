@@ -125,6 +125,10 @@ export interface Health {
 export interface JobView {
 	job: Job;
 	pending: Pending[];
+	/** Queued jobs: what holds the job back (a limit, another job in the same checkout). */
+	queueReason?: string | null;
+	/** Things the creator should know (e.g. a group shared with another Claude session). */
+	warnings?: string[];
 }
 
 export interface WaitResponse {

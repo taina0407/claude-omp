@@ -287,6 +287,9 @@ async function waitJobs(
 			timeout: String(Math.max(0, Math.min(LONG_POLL_S, remaining))),
 		});
 		if (target.group) q.set("group", target.group);
+		if (target.group && process.env.OMP_TASK_CLAUDE_SESSION) {
+			q.set("session", process.env.OMP_TASK_CLAUDE_SESSION);
+		}
 		const res = await client.call<WaitResponse>("GET", `/v1/wait?${q}`);
 		if (res.reason === "attention") {
 			const needs = res.jobs.filter((v) => wakeReasons(v).length);
@@ -323,12 +326,28 @@ async function waitJobs(
 	}
 }
 
-async function afterStart(client: Client, job: Job, values: Values, verb: string): Promise<number> {
+async function afterStart(
+	client: Client,
+	view: JobView,
+	values: Values,
+	verb: string,
+): Promise<number> {
+	const { job } = view;
+	for (const w of view.warnings ?? []) process.stderr.write(`warning: ${w}\n`);
 	if (values.detach) {
-		if (values.json) out(JSON.stringify({ id: job.id, status: job.status }));
-		else {
+		if (values.json) {
+			out(
+				JSON.stringify({
+					id: job.id,
+					status: job.status,
+					...(view.queueReason ? { queue_reason: view.queueReason } : {}),
+					...(view.warnings?.length ? { warnings: view.warnings } : {}),
+				}),
+			);
+		} else {
 			const waiting = job.status === "blocked" || job.status === "queued";
 			out(`job ${job.id} ${verb}${waiting ? ` (${job.status})` : ""}`);
+			if (view.queueReason) out(`  queued: ${view.queueReason}`);
 			out(`  next: run \`omp-task wait ${job.id}\` in the background and end your turn;`);
 			out("  it returns only when the job ends or needs you.");
 		}
@@ -364,8 +383,10 @@ async function printSummary(group: string, json: boolean): Promise<number> {
 	for (const j of s.jobs) {
 		const files = j.changedFiles === null ? "-" : String(j.changedFiles.length);
 		const after = j.after.length ? `  after ${j.after.join(",")}` : "";
+		const mine = process.env.OMP_TASK_CLAUDE_SESSION;
+		const other = mine && j.claudeSession && j.claudeSession !== mine ? "  [another session]" : "";
 		out(
-			`${j.id}  ${j.status.padEnd(11)}  $${j.costUsd.toFixed(4)}  files ${files.padStart(2)}  ${j.title.slice(0, 50)}${after}`,
+			`${j.id}  ${j.status.padEnd(11)}  $${j.costUsd.toFixed(4)}  files ${files.padStart(2)}  ${j.title.slice(0, 50)}${after}${other}`,
 		);
 		for (const e of j.errors.slice(-1)) out(`    ${e}`);
 	}
@@ -393,8 +414,8 @@ const commands: Record<string, Command> = {
 		const { values, positionals } = parse(argv, TASK_OPTIONS);
 		const options = jobOptions(values, readText(values, positionals));
 		const client = await connect();
-		const { job } = await client.call<JobView>("POST", "/v1/jobs", { options });
-		return afterStart(client, job, values, "started");
+		const view = await client.call<JobView>("POST", "/v1/jobs", { options });
+		return afterStart(client, view, values, "started");
 	},
 
 	async continue(argv) {
@@ -403,8 +424,8 @@ const commands: Record<string, Command> = {
 		if (!parent) throw new UsageError("continue needs a job id");
 		const options = jobOptions(values, readText(values, rest));
 		const client = await connect();
-		const { job } = await client.call<JobView>("POST", "/v1/jobs", { options, parent });
-		return afterStart(client, job, values, "started");
+		const view = await client.call<JobView>("POST", "/v1/jobs", { options, parent });
+		return afterStart(client, view, values, "started");
 	},
 
 	async resume(argv) {
@@ -416,8 +437,8 @@ const commands: Record<string, Command> = {
 		const [ref] = positionals;
 		if (!ref) throw new UsageError("resume needs a job id");
 		const client = await connect();
-		const { job } = await client.call<JobView>("POST", `${jobPath(ref)}/resume`, {});
-		return afterStart(client, job, values, "resumed");
+		const view = await client.call<JobView>("POST", `${jobPath(ref)}/resume`, {});
+		return afterStart(client, view, values, "resumed");
 	},
 
 	async review(argv) {
@@ -454,13 +475,13 @@ const commands: Record<string, Command> = {
 						: { kind: values.staged ? "staged" : "uncommitted" };
 		const { prompt: _, ...options } = jobOptions(values, "-");
 		const client = await connect();
-		const { job } = await client.call<JobView>("POST", "/v1/reviews", {
+		const view = await client.call<JobView>("POST", "/v1/reviews", {
 			target,
 			mode: values.adversarial ? "adversarial" : "standard",
 			focus: (values.focus as string | undefined) ?? null,
 			options,
 		});
-		return afterStart(client, job, values, "started");
+		return afterStart(client, view, values, "started");
 	},
 
 	async wait(argv) {
@@ -584,7 +605,7 @@ const commands: Record<string, Command> = {
 			return printSummary(values.group as string, Boolean(values.json));
 		}
 		if (!ref) throw new UsageError("status needs a job id (or --group NAME)");
-		const { job, pending } = await getJob(await connect(), ref);
+		const { job, pending, queueReason } = await getJob(await connect(), ref);
 		if (isTerminal(job.status) || job.status === "interrupted" || pending.length) {
 			emitJob(job, pending, Boolean(values.json));
 			return 0;
@@ -600,6 +621,7 @@ const commands: Record<string, Command> = {
 						tools_so_far: job.tools,
 						cost_usd_so_far: job.costUsd,
 						session_id: job.sessionId,
+						...(queueReason ? { queue_reason: queueReason } : {}),
 					},
 					null,
 					2,
@@ -610,6 +632,7 @@ const commands: Record<string, Command> = {
 				.map(([k, v]) => `${k}×${v}`)
 				.join(", ");
 			out(`${job.id} ${job.status} — ${job.title} — tools so far: ${tools || "none"}`);
+			if (queueReason) out(`  queued: ${queueReason}`);
 		}
 		return 0;
 	},

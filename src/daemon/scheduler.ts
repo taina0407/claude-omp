@@ -18,7 +18,9 @@ export type Decision =
 	| { action: "release"; job: Job }
 	| { action: "start"; job: Job }
 	| { action: "skip"; job: Job; reason: string }
-	| { action: "over_budget"; job: Job; reason: string };
+	| { action: "over_budget"; job: Job; reason: string }
+	/** A queued job that must wait for room; `reason` says what holds it back. */
+	| { action: "hold"; job: Job; reason: string };
 
 export interface GroupLimits {
 	maxConcurrent: number | null;
@@ -126,16 +128,34 @@ export function schedule(store: Store, config: Config, running: Job[]): Decision
 			status.set(job.id, "over_budget");
 			continue;
 		}
-		if (active.length >= maxConcurrent) continue;
+		const hold = (reason: string) => decisions.push({ action: "hold", job, reason });
+		if (active.length >= maxConcurrent) {
+			hold(`${active.length} jobs are running, the most at once (max_concurrent)`);
+			continue;
+		}
 		if (job.groupName) {
 			const limit = groupLimits(store, config, job.groupName).maxConcurrent;
 			const inGroup = active.filter((j) => j.groupName === job.groupName).length;
-			if (limit !== null && inGroup >= limit) continue;
+			if (limit !== null && inGroup >= limit) {
+				hold(`group ${job.groupName} already runs ${inGroup} job(s), its limit`);
+				continue;
+			}
 		}
 		if (isWriter(job)) {
 			const repo = repoOf(job);
-			const writers = active.filter((j) => isWriter(j) && repoOf(j) === repo).length;
-			if (writers >= maxWriters) continue;
+			const writers = active.filter((j) => isWriter(j) && repoOf(j) === repo);
+			if (writers.length >= maxWriters) {
+				const names = writers.map((j) =>
+					j.claudeSession && j.claudeSession !== job.claudeSession
+						? `${j.id} (another Claude session)`
+						: j.id,
+				);
+				hold(
+					`${names.join(", ")} edit${writers.length === 1 ? "s" : ""} ${repo} without isolation; ` +
+						"jobs that edit one checkout take turns (--isolate worktree runs alongside)",
+				);
+				continue;
+			}
 		}
 		decisions.push({ action: "start", job });
 		status.set(job.id, "starting");

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.0 (2026-10-29)
+
+- Workers no longer carry the identity of the Claude Code session that happened to start the
+  daemon. The daemon drops session and terminal-pane variables (`CLAUDE_CODE_*`, `CLAUDECODE`,
+  `OMP_TASK_CLAUDE_SESSION`, `ORCA_*`, `TMUX_PANE`, …), and each worker gets only its own job's
+  `OMP_TASK_CLAUDE_SESSION`. Before, every worker reported to, and could reach, the first
+  session's pane and messaging socket.
+- A job reports `other_changes`: changed files its edit/write tools never named, made by its
+  shell commands or by someone else in the same checkout (the user, another session). The
+  skill says not to revert or delete them without checking. The database is upgraded in place
+  (a new column); job records are kept.
+- `wait --group` waits only for the calling Claude session's jobs (and jobs of no session);
+  starting a job in a group that has unfinished jobs of another session prints a warning, and
+  `summary` marks them `[another session]`.
+- A queued job says what holds it back (`queued:` in `run --detach` and `status`,
+  `queue_reason` in JSON), naming the job that holds the checkout and whether it belongs to
+  another Claude session.
+
 ## 1.1.2 (2026-10-29)
 
 - An interrupted job keeps its concurrency and writer slot until it is resumed or cancelled.

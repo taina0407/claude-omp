@@ -4,8 +4,8 @@
  * requests, and enforces timeouts. A job can be run again with `resume` after the daemon stopped
  * under it; its counters carry over.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { MAX_PROMPT_BYTES } from "../backends/omp-rpc/protocol";
 import { ompRpcBackend } from "../backends/omp-rpc/session";
 import type { Backend, BackendEvent, BackendSession } from "../backends/types";
@@ -19,7 +19,8 @@ import {
 	SUBMIT_REVIEW,
 	SUBMIT_REVIEW_TOOL,
 } from "../review/schema";
-import { changedFiles, type Snapshot, snapshot, withoutDir } from "./git";
+import { workerEnv } from "./env";
+import { changedFiles, gitRoot, type Snapshot, snapshot, withoutDir } from "./git";
 import { jobDir, preambleFile, stateDir } from "./paths";
 import { decideApproval } from "./policy";
 import type { Store } from "./store";
@@ -108,6 +109,8 @@ export class JobRunner {
 	/** Where the worker and the git snapshots run: the worktree, or the user's cwd. */
 	#workCwd: string;
 	#gitBefore: Snapshot | null = null;
+	/** Absolute paths the worker's edit/write tools named, over every run of the job. */
+	#edited = new Set<string>();
 	/** The omp session this run resumed after an interruption, if any. */
 	#resumedSession: string | null = null;
 	/** Whether omp got as far as reporting its session (it never does when --resume fails). */
@@ -196,6 +199,7 @@ export class JobRunner {
 		}
 		const job = this.#job;
 		this.#gitBefore = this.#loadGitBefore();
+		this.#loadEdited();
 		this.#store.updateJob(job.id, {
 			status: "starting",
 			startedAt: job.startedAt ?? nowIso(),
@@ -229,9 +233,38 @@ export class JobRunner {
 				rawLogPath: join(dir, "events.jsonl"),
 				stderrPath: join(dir, "stderr.log"),
 				hostTools: job.review ? [SUBMIT_REVIEW_TOOL] : [],
+				env: workerEnv(process.env, job.claudeSession),
 			},
 			(e) => this.#onEvent(e),
 		);
+	}
+
+	/** Edited paths are appended here as they happen, so a resumed job still knows them. */
+	#editedFile(): string {
+		return join(jobDir(this.#job.id), "edited-paths.txt");
+	}
+
+	#loadEdited(): void {
+		const file = this.#editedFile();
+		if (!existsSync(file)) return;
+		for (const line of readFileSync(file, "utf8").split("\n")) if (line) this.#edited.add(line);
+	}
+
+	#noteEdited(paths: string[]): void {
+		const fresh = paths
+			.map((p) => (isAbsolute(p) ? p : resolve(this.#workCwd, p)))
+			.filter((p) => !this.#edited.has(p));
+		if (!fresh.length) return;
+		for (const p of fresh) this.#edited.add(p);
+		appendFileSync(this.#editedFile(), `${fresh.join("\n")}\n`);
+	}
+
+	/** The changed files (relative to the repository root) no edit/write call of the worker named. */
+	#otherChanges(changed: string[] | null): string[] | null {
+		const root = changed && gitRoot(this.#workCwd);
+		if (!changed || !root) return null;
+		const edited = new Set([...this.#edited].map((p) => relative(resolve(root), p)));
+		return changed.filter((f) => !edited.has(f));
 	}
 
 	/** The dirty-file snapshot from the job's first run, so a resumed job reports all its changes. */
@@ -334,6 +367,7 @@ export class JobRunner {
 				else this.#feed("progress", e.text.slice(0, 300));
 				break;
 			case "tool_start":
+				if (e.paths) this.#noteEdited(e.paths);
 				this.#toolDetail.set(e.id, `${e.name}: ${e.detail.slice(0, 160)}`);
 				this.#tools[e.name] = (this.#tools[e.name] ?? 0) + 1;
 				this.#store.updateJob(this.#jobId, { tools: this.#tools }); // for `status` while running
@@ -639,11 +673,10 @@ export class JobRunner {
 		const job = this.#job;
 		const after = this.#gitBefore ? snapshot(this.#workCwd) : null;
 		this.#errors.push(...errors);
+		const all = withoutDir(changedFiles(this.#gitBefore, after), this.#workCwd, stateDir());
 		// A read-access worker has no tool that writes, so whatever changed was someone else's edit.
-		const changed =
-			job.access === "read"
-				? []
-				: withoutDir(changedFiles(this.#gitBefore, after), this.#workCwd, stateDir());
+		const changed = job.access === "read" ? [] : all;
+		const other = this.#otherChanges(all);
 		if (job.review) {
 			if (this.#review) {
 				this.#finalText = renderReview(this.#review, job.review.target);
@@ -662,11 +695,16 @@ export class JobRunner {
 			finishedAt: nowIso(),
 			stopReason: this.#stopReason,
 			changedFiles: changed,
+			otherChanges: other,
 			exitCode,
 			runnerPid: null,
 			ompPid: null,
 		});
-		this.#feed("done", status, { changed_files: changed, cost_usd: progress.costUsd });
+		this.#feed("done", status, {
+			changed_files: changed,
+			other_changes: other,
+			cost_usd: progress.costUsd,
+		});
 		this.#resolveDone(this.#store.getJob(job.id) as Job);
 	}
 }

@@ -29,6 +29,8 @@ export interface SessionSpec {
 	stderrPath: string;
 	/** Extra host tools for this session; their calls arrive as `tool_call` events. */
 	hostTools?: HostTool[];
+	/** The worker's environment (default: the daemon's). */
+	env?: Record<string, string>;
 }
 
 export type EndOutcome = "completed" | "aborted" | "failed";
@@ -38,7 +40,8 @@ export type BackendEvent =
 	| { kind: "started"; sessionId: string | null; model: string | null }
 	/** A note from the worker; `checkpoint` asks for the orchestrator's attention. */
 	| { kind: "progress"; text: string; checkpoint?: boolean }
-	| { kind: "tool_start"; id: string; name: string; detail: string }
+	/** `paths`: the files an edit/write call changes, as the worker named them. */
+	| { kind: "tool_start"; id: string; name: string; detail: string; paths?: string[] }
 	| { kind: "tool_end"; id: string; name: string; isError: boolean; text: string }
 	| {
 			kind: "assistant";

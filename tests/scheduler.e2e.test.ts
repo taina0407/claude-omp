@@ -49,6 +49,24 @@ describe("concurrency", () => {
 		await sb.cli(["cancel", reader]);
 	});
 
+	test("a queued job says what holds it back, naming another session's writer", async () => {
+		const a = await sb.start(["SLEEP"], { OMP_TASK_CLAUDE_SESSION: "session-a" });
+		await sb.waitForStatus(a, "running");
+		const b = JSON.parse(
+			(
+				await sb.cli(["run", "--detach", "--json", "WRITE b.txt"], [0], {
+					OMP_TASK_CLAUDE_SESSION: "session-b",
+				})
+			).stdout,
+		) as { id: string; status: string; queue_reason?: string };
+		expect(b.status).toBe("queued");
+		expect(b.queue_reason).toContain(`${a} (another Claude session)`);
+		const status = await sb.cli(["status", b.id]);
+		expect(status.stdout).toContain("queued: ");
+		await sb.cli(["steer", a, "done"]);
+		expect((await sb.waitJson(b.id)).status).toBe("completed");
+	});
+
 	test("an interrupted writer keeps its turn across a daemon restart until it is resumed", async () => {
 		const a = await sb.start(["SLEEP"]);
 		await sb.waitForStatus(a, "running");
@@ -264,4 +282,33 @@ test("list --group filters by group", async () => {
 	const jobs = JSON.parse(stdout) as JobJson[];
 	expect(jobs).toHaveLength(1);
 	expect(jobs[0]?.group).toBe("x");
+});
+
+describe("groups across Claude sessions", () => {
+	test("wait --group covers only this session's jobs, and a shared name is flagged", async () => {
+		const mine = { OMP_TASK_CLAUDE_SESSION: "session-b" };
+		const a = await sb.start(["--access", "read", "-g", "g", "SLEEP"], {
+			OMP_TASK_CLAUDE_SESSION: "session-a",
+		});
+		await sb.waitForStatus(a, "running");
+		const created = await sb.cli(
+			["run", "--detach", "--access", "read", "-g", "g", "hello"],
+			[0],
+			mine,
+		);
+		expect(created.stderr).toContain(
+			`also has 1 unfinished job(s) of another Claude session (${a})`,
+		);
+		const waited = await sb.cli(["wait", "--group", "g", "--max-wait", "30"], [0], mine);
+		expect(waited.stdout).toContain("WAKE: done (1 completed)");
+		expect(sb.jobStatus(a)).toBe("running");
+		const summary = await sb.cli(["summary", "g"], [0], mine);
+		expect(summary.stdout).toContain("[another session]");
+		const other = await sb.cli(["wait", "--group", "g", "--max-wait", "1"], null, {
+			OMP_TASK_CLAUDE_SESSION: "session-c",
+		});
+		expect(other.code).not.toBe(0);
+		expect(other.stderr).toContain("all of other Claude sessions");
+		await sb.cli(["cancel", a]);
+	});
 });

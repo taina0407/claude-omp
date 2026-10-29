@@ -7,8 +7,16 @@ import { dbFile } from "./paths";
 import type { FeedEntry, Job, JobSpec, JobStatus, Notice, Pending } from "./types";
 import { nowIso } from "./util";
 
-/** Bump when the layout changes; a database with another (or no) version is reset. */
-const SCHEMA_VERSION = "omp-task/1";
+/**
+ * Bump when the layout changes. A database of an earlier version listed in UPGRADES is upgraded in
+ * place; one with any other (or no) version is reset.
+ */
+const SCHEMA_VERSION = "omp-task/2";
+
+/** Statements that bring a database of the key's version to the next one. */
+const UPGRADES: Record<string, { to: string; sql: string[] }> = {
+	"omp-task/1": { to: "omp-task/2", sql: ["ALTER TABLE jobs ADD COLUMN other_changes TEXT"] },
+};
 
 const SCHEMA = `
 	CREATE TABLE jobs (
@@ -61,6 +69,7 @@ const SCHEMA = `
 		errors TEXT NOT NULL DEFAULT '[]',
 		notices TEXT NOT NULL DEFAULT '[]',
 		changed_files TEXT,
+		other_changes TEXT,
 		exit_code INTEGER
 	);
 	CREATE INDEX jobs_cwd ON jobs(cwd);
@@ -113,6 +122,7 @@ const JSON_COLUMNS = new Set([
 	"denied_tools",
 	"errors",
 	"changed_files",
+	"other_changes",
 	"options",
 	"payload",
 	"result",
@@ -172,6 +182,19 @@ export class Store {
 			value: string;
 		} | null;
 		if (row?.value === SCHEMA_VERSION) return;
+		let version = row?.value;
+		if (version && UPGRADES[version]) {
+			this.db.transaction(() => {
+				while (version && version !== SCHEMA_VERSION) {
+					const step = UPGRADES[version];
+					if (!step) throw new Error(`no upgrade path from schema ${version}`);
+					for (const sql of step.sql) this.db.run(sql);
+					version = step.to;
+				}
+				this.db.run("UPDATE meta SET value = ? WHERE key = 'schema'", [SCHEMA_VERSION]);
+			})();
+			return;
+		}
 		this.db.transaction(() => {
 			for (const table of TABLES) this.db.run(`DROP TABLE IF EXISTS ${table}`);
 			this.db.run(SCHEMA);
