@@ -42,6 +42,11 @@ const configSchema = z.looseObject({
 	auto_resume: z.boolean().optional(),
 	/** Stop the daemon after this long with no jobs and no clients (default 15m). */
 	daemon_idle_timeout: duration.optional(),
+	/**
+	 * What a job's events.jsonl keeps: compact (default) drops the full message every streamed
+	 * update repeats, full keeps every frame as omp sent it, off writes nothing.
+	 */
+	event_log: z.enum(["compact", "full", "off"]).optional(),
 	/** Finished jobs (and their files) are deleted after this long (default 30d; 0 keeps them). */
 	job_retention: duration.optional(),
 	/** Jobs running at once across everything (default 4). */

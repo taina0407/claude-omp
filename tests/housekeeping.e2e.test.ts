@@ -1,4 +1,4 @@
-/** Daemon housekeeping: deleting old finished jobs. */
+/** Daemon housekeeping: deleting old finished jobs, and how much of each job is kept. */
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -41,5 +41,17 @@ describe("retention", () => {
 		expect(sb.job(plain.id)).toBeNull();
 		expect(sb.job(isolated.id)?.status).toBe("completed");
 		expect(sb.daemonLog()).toContain("deleted old jobs");
+	});
+});
+
+describe("event log", () => {
+	test("keeps the protocol frames by default, and none with event_log off", async () => {
+		const logged = await sb.runJson(["hello"]);
+		expect(existsSync(join(sb.stateDir, "jobs", logged.id, "events.jsonl"))).toBe(true);
+		await sb.cli(["daemon", "stop"]);
+		sb.writeConfig({ event_log: "off" });
+		const quiet = await sb.runJson(["hello"]);
+		expect(quiet.status).toBe("completed");
+		expect(existsSync(join(sb.stateDir, "jobs", quiet.id, "events.jsonl"))).toBe(false);
 	});
 });

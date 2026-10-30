@@ -397,7 +397,10 @@ trước khi chạy.
 máy khách. `on_session_end` mặc định là `keep`; `cancel` dừng các job của phiên Claude đó.
 Các job đã hoàn tất và tệp của chúng hết thời hạn lưu giữ sau `job_retention` (30 ngày);
 `0` tắt việc tự động xóa theo thời hạn lưu giữ. Job sở hữu worktree được giữ lại cho đến
-khi worktree đó bị xóa.
+khi worktree đó bị xóa. `event_log` quyết định `events.jsonl` của job giữ những gì: `compact`
+(mặc định) bỏ toàn bộ message mà omp lặp lại trong mỗi `message_update` khi stream (vẫn giữ
+các delta), `full` giữ nguyên mọi frame (có thể lên tới hàng GB với câu trả lời dài), và `off`
+không ghi event log.
 
 `stop_gate` tùy chọn mặc định dùng mô hình `smol`, thời gian tối đa `3m`, mức nghiêm trọng
 tối thiểu `high` và tối đa 3 lần kiểm tra mỗi phiên Claude. Bật bằng

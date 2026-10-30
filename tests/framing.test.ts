@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { ChunkAssembler, FrameDecoder, LineSplitter } from "../src/backends/omp-rpc/framing";
+import {
+	ChunkAssembler,
+	compactFrame,
+	FrameDecoder,
+	LineSplitter,
+} from "../src/backends/omp-rpc/framing";
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
 
@@ -84,5 +89,29 @@ describe("FrameDecoder", () => {
 		].join("\n");
 		const d = new FrameDecoder();
 		expect(d.push(utf8(`${lines}\n`))).toEqual([{ type: "ready" }, logical]);
+	});
+});
+
+describe("compactFrame", () => {
+	test("drops the accumulated message from streamed updates, keeping the delta", () => {
+		const partial = { role: "assistant", content: [{ type: "text", text: "Hello wor" }] };
+		const frame = {
+			type: "message_update",
+			messageId: "msg-1",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "wor", partial },
+			message: partial,
+		};
+		expect(compactFrame(frame)).toEqual({
+			type: "message_update",
+			messageId: "msg-1",
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "wor" },
+		});
+		expect(frame.message).toBe(partial);
+		expect(frame.assistantMessageEvent.partial).toBe(partial);
+	});
+
+	test("leaves other frames alone", () => {
+		const frame = { type: "message_end", message: { role: "assistant", content: [] } };
+		expect(compactFrame(frame)).toBe(frame);
 	});
 });

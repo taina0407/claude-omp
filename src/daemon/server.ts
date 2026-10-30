@@ -264,8 +264,10 @@ export class Daemon {
 	}
 
 	#start(job: Job, resume: boolean): void {
+		const eventLog = safeConfig().event_log;
 		const runner = new JobRunner(this.store, job.id, {
 			overLimit: (j) => budgetBlock(this.store, safeConfig(), j, false),
+			...(eventLog ? { eventLog } : {}),
 		});
 		this.#runners.set(job.id, runner);
 		log("info", resume ? "resuming job" : "starting job", { job: job.id });

@@ -3,9 +3,9 @@ import { appendFileSync, closeSync, openSync, readFileSync } from "node:fs";
 import type { Subprocess } from "bun";
 import { ompBin } from "../../core/paths";
 import { errorText } from "../../core/util";
-import type { Backend, BackendEvent, BackendSession, SessionSpec } from "../types";
+import type { Backend, BackendEvent, BackendSession, EventLogMode, SessionSpec } from "../types";
 import { buildArgs } from "./args";
-import { encodeFrame, type Frame, FrameDecoder } from "./framing";
+import { compactFrame, encodeFrame, type Frame, FrameDecoder } from "./framing";
 import { OmpRpcProtocol } from "./protocol";
 
 /** omp can take a while before it acknowledges a prompt (25s per turn where D-Bus is missing). */
@@ -25,12 +25,14 @@ class OmpRpcSession implements BackendSession {
 	readonly #proc: Subprocess<"pipe", "pipe", number> | null;
 	readonly #protocol: OmpRpcProtocol;
 	readonly #rawLogPath: string;
+	readonly #eventLog: EventLogMode;
 	#exited: Promise<void> = Promise.resolve();
 	#timers: ReturnType<typeof setTimeout>[] = [];
 	#ended = false;
 
 	constructor(spec: SessionSpec, onEvent: (e: BackendEvent) => void) {
 		this.#rawLogPath = spec.rawLogPath;
+		this.#eventLog = spec.eventLog ?? "compact";
 		const emit = (e: BackendEvent) => {
 			if (e.kind === "end") {
 				if (this.#ended) return;
@@ -97,7 +99,10 @@ class OmpRpcSession implements BackendSession {
 		const decoder = new FrameDecoder();
 		const handle = (frames: Frame[]) => {
 			for (const frame of frames) {
-				appendFileSync(this.#rawLogPath, encodeFrame(frame));
+				if (this.#eventLog !== "off") {
+					const logged = this.#eventLog === "full" ? frame : compactFrame(frame);
+					appendFileSync(this.#rawLogPath, encodeFrame(logged));
+				}
 				this.#protocol.onFrame(frame);
 			}
 		};

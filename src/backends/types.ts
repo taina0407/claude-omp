@@ -12,6 +12,9 @@ export interface HostTool {
 	parameters: Record<string, unknown>;
 }
 
+/** See `event_log` in the config. */
+export type EventLogMode = "compact" | "full" | "off";
+
 export interface SessionSpec {
 	cwd: string;
 	access: Access;
@@ -26,6 +29,8 @@ export interface SessionSpec {
 	prompt: string;
 	/** Where the backend writes the raw protocol frames and the worker's stderr. */
 	rawLogPath: string;
+	/** How much of the protocol goes to `rawLogPath` (default compact). */
+	eventLog?: EventLogMode;
 	stderrPath: string;
 	/** Extra host tools for this session; their calls arrive as `tool_call` events. */
 	hostTools?: HostTool[];

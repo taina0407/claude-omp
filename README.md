@@ -374,6 +374,9 @@ administrator policies; review plans before running them.
 clients. `on_session_end` defaults to `keep`; `cancel` stops that Claude session's jobs.
 Finished jobs and their files expire after `job_retention` (30 days); `0` disables automatic
 retention deletion. Jobs owning worktrees are retained until those worktrees are removed.
+`event_log` sets what a job's `events.jsonl` keeps: `compact` (default) drops the full message
+that omp repeats in every streamed `message_update` (the deltas stay), `full` keeps every frame
+as sent (it can reach gigabytes for long replies), and `off` writes no event log.
 
 The optional `stop_gate` defaults to model `smol`, timeout `3m`, minimum severity `high`, and
 at most 3 review attempts per Claude session. Enable it with `/omp:setup --stop-gate on`;

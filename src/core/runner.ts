@@ -8,7 +8,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { MAX_PROMPT_BYTES } from "../backends/omp-rpc/protocol";
 import { ompRpcBackend } from "../backends/omp-rpc/session";
-import type { Backend, BackendEvent, BackendSession } from "../backends/types";
+import type { Backend, BackendEvent, BackendSession, EventLogMode } from "../backends/types";
 import { createWorktree, worktreeCwd } from "../isolation/worktree";
 import { renderReview } from "../review/render";
 import {
@@ -105,6 +105,7 @@ export function promptText(job: Job, store?: Store): string {
 export class JobRunner {
 	readonly #store: Store;
 	readonly #backend: Backend;
+	readonly #eventLog: EventLogMode | undefined;
 	readonly #jobId: string;
 	#job: Job;
 	#session: BackendSession | null = null;
@@ -156,10 +157,15 @@ export class JobRunner {
 	constructor(
 		store: Store,
 		jobId: string,
-		opts: { backend?: Backend; overLimit?: (job: Job) => string | null } = {},
+		opts: {
+			backend?: Backend;
+			overLimit?: (job: Job) => string | null;
+			eventLog?: EventLogMode;
+		} = {},
 	) {
 		this.#store = store;
 		this.#backend = opts.backend ?? ompRpcBackend;
+		this.#eventLog = opts.eventLog;
 		this.#overLimit = opts.overLimit ?? (() => null);
 		this.#jobId = jobId;
 		const job = store.getJob(jobId);
@@ -240,6 +246,7 @@ export class JobRunner {
 				extraArgs: job.extraArgs,
 				prompt,
 				rawLogPath: join(dir, "events.jsonl"),
+				...(this.#eventLog ? { eventLog: this.#eventLog } : {}),
 				stderrPath: join(dir, "stderr.log"),
 				hostTools: job.review ? [SUBMIT_REVIEW_TOOL] : [],
 				env: workerEnv(process.env, job.claudeSession),

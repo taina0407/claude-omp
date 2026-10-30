@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.2 (2026-10-30)
+
+- A job's `events.jsonl` no longer grows with the square of a reply's length: by default
+  (`event_log: "compact"`) streamed `message_update` frames are logged without the full message
+  so far, which omp repeats twice in each of them; the deltas and `message_end` still carry the
+  text. Long jobs went from hundreds of megabytes (up to 4 GB) to a few megabytes.
+  `event_log: "full"` keeps every frame as before, `"off"` writes no event log.
+
 ## 1.3.1 (2026-10-29)
 
 - Opening the job database waits for another process that holds a lock on it (a daemon that is

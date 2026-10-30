@@ -14,6 +14,21 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * The frame as the compact event log keeps it. Every streamed `message_update` carries the whole
+ * message so far, twice (`message` and `assistantMessageEvent.partial`), so a raw log grows with
+ * the square of a reply's length; the deltas and the final `message_end` say the same.
+ */
+export function compactFrame(frame: Frame): Frame {
+	if (frame.type !== "message_update") return frame;
+	const { message: _, ...rest } = frame;
+	if (isRecord(rest.assistantMessageEvent)) {
+		const { partial: __, ...event } = rest.assistantMessageEvent;
+		rest.assistantMessageEvent = event;
+	}
+	return rest;
+}
+
 /** Splits a byte stream into complete UTF-8 lines; keeps the trailing partial line buffered. */
 export class LineSplitter {
 	#buffer = "";
