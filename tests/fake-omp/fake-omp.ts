@@ -11,6 +11,7 @@
  *   ASK           ask_orchestrator (after omp's own approval prompt for it); answer goes in the text
  *   BASH          request approval for `make test`; the decision goes in the text
  *   BASHCHAIN     the same for `make test && rm -rf build`
+ *   PAIR          two approvals open at once (`make a`, `make b`); the decisions go in the text
  *   SH <b64>      bash calls from base64url JSON [{command, cwd?, env?}], each asking approval;
  *                 the decisions go in the text as sh<n>=<decision>
  *   NOTIFY        notify_orchestrator
@@ -271,6 +272,23 @@ async function runPrompt(prompt: Frame): Promise<void> {
 				isError: denied,
 				result: { content: [{ type: "text", text: denied ? "Tool call denied by user" : "ok" }] },
 			});
+		} else if (word === "PAIR") {
+			for (const n of ["a", "b"]) {
+				emit({
+					type: "extension_ui_request",
+					id: `ap-pair-${n}`,
+					method: "select",
+					title: `Allow tool: bash\nCommand: make ${n}`,
+					options: ["Approve", "Approve bash for this session", "Deny"],
+				});
+			}
+			for (const n of ["a", "b"]) {
+				const res = await waitFor(
+					(f) => f.type === "extension_ui_response" && f.id === `ap-pair-${n}`,
+					60_000,
+				);
+				notes.push(`pair-${n}=${String(res?.value ?? "<none>")}`);
+			}
 		} else if (word === "SH") {
 			const calls = JSON.parse(Buffer.from(next, "base64url").toString()) as Frame[];
 			for (const [n, args] of calls.entries()) {

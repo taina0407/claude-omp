@@ -18,11 +18,13 @@ import type {
 	GroupSummary,
 	Health,
 	JobView,
+	PendingState,
 	PlanResponse,
+	UiSnapshot,
 	WaitResponse,
 	WaitView,
 } from "../api/schema";
-import { loadConfig } from "../core/config";
+import { type Config, DECIDERS, loadConfig, uiSettings } from "../core/config";
 import type { JobOptions } from "../core/jobs";
 import { COMPILED, configFile, ompBin, preambleFile, socketPath, stateDir } from "../core/paths";
 import { orderPlan, readPlanFile } from "../core/plan";
@@ -38,8 +40,16 @@ import { errorText, parseDuration, UsageError } from "../core/util";
 import { runDaemon } from "../daemon/server";
 import { hookMain } from "../hooks/hooks";
 import { VERSION } from "../version";
-import { type Client, connect, DaemonError, existingDaemon } from "./client";
-import { ATTENTION_FEED_KINDS, emitJob, formatFeed, out, pendingSummary } from "./render";
+import { Client, connect, DaemonError, existingDaemon } from "./client";
+import {
+	ATTENTION_FEED_KINDS,
+	alreadyResolvedText,
+	emitJob,
+	formatFeed,
+	out,
+	pendingSummary,
+	resolvedSummary,
+} from "./render";
 
 const EXIT_FAILED = 1;
 const EXIT_USAGE = 2;
@@ -58,6 +68,8 @@ export function ompVersionOk(text: string): boolean {
 
 /** One long-poll request; the CLI asks again until its own --max-wait. */
 const LONG_POLL_S = 25;
+/** Longest `await-ref --max-wait` (the plugin's UI runs it under a 10-minute process limit). */
+const MAX_AWAIT_REF_S = 600;
 
 type Values = Record<string, string | boolean | string[] | undefined>;
 
@@ -109,8 +121,9 @@ Commands:
                            --from-start, -v/--verbose (every event), -q/--quiet,
                            --last N (the last N events so far, then exit)
   steer <job> [text...]    redirect a running job mid-flight (-b FILE for a long message)
-  reply <job> [text...]    answer a running job's question (--ref to pick one, else the oldest)
-  approve <job>            approve the oldest pending request (--ref to pick one; --session:
+  reply <job> [text...]    answer a running job's question (--ref REF from its PENDING: line;
+                           required when the job has several open questions)
+  approve <job>            approve its pending request (--ref REF as for reply; --session:
                            also later calls of that tool; --same: also this exact command
                            again; --rule GLOB: also commands matching GLOB; --deny)
   cancel <job>             cancel a running, waiting, queued, blocked or interrupted job
@@ -297,18 +310,29 @@ async function waitJobs(
 			q.set("session", process.env.OMP_TASK_CLAUDE_SESSION);
 		}
 		const res = await client.call<WaitResponse>("GET", `/v1/wait?${q}`);
+		// A busy daemon of an earlier release (kept until its jobs end) sends no `resolved`.
+		for (const v of res.jobs) v.resolved ??= [];
 		if (res.reason === "attention") {
 			const needs = res.jobs.filter((v) => wakeReasons(v).length);
-			for (const v of needs) {
-				emitJob(v.job, v.pending, opts.json, { notices: v.delivered, shellReads: v.shellReads });
+			// JSON: each settled item rides in its job's object, so those jobs are listed too.
+			const shown = opts.json
+				? res.jobs.filter((v) => needs.includes(v) || v.resolved?.length)
+				: needs;
+			for (const v of shown) {
+				emitJob(v.job, v.pending, opts.json, {
+					notices: v.delivered,
+					shellReads: v.shellReads,
+					resolved: v.resolved,
+				});
 				out();
 			}
-			for (const v of res.jobs.filter((x) => !needs.includes(x))) {
+			for (const v of res.jobs.filter((x) => !shown.includes(x))) {
 				out(`(job ${v.job.id} is ${v.job.status})`);
 			}
 			// Last, so the job blocks keep starting with their "## omp job" header.
 			if (!opts.json) {
 				for (const v of needs) for (const p of v.pending) out(pendingSummary(p));
+				emitResolved(res.jobs);
 				out(`WAKE: ${needs.map((v) => `${v.job.id} ${wakeReasons(v).join("+")}`).join("; ")}`);
 			}
 			return 0;
@@ -318,9 +342,11 @@ async function waitJobs(
 				emitJob(v.job, [], opts.json, {
 					maxResultLines: WAKE_RESULT_LINES,
 					shellReads: v.shellReads,
+					resolved: v.resolved,
 				});
 				out();
 			}
+			if (!opts.json) emitResolved(res.jobs);
 			if (!opts.json) {
 				const counts = new Map<string, number>();
 				for (const v of res.jobs) counts.set(v.job.status, (counts.get(v.job.status) ?? 0) + 1);
@@ -333,6 +359,11 @@ async function waitJobs(
 			return EXIT_MAX_WAIT;
 		}
 	}
+}
+
+/** Items an earlier wait reported that the user, a rule or a timeout settled since. */
+function emitResolved(views: WaitView[]): void {
+	for (const r of views.flatMap((v) => v.resolved ?? [])) out(resolvedSummary(r));
 }
 
 async function afterStart(
@@ -403,7 +434,18 @@ async function printSummary(group: string, json: boolean): Promise<number> {
 }
 
 async function control(client: Client, ref: string, req: ControlRequest): Promise<number> {
-	const res = await client.call<ControlResponse>("POST", `${jobPath(ref)}/control`, req);
+	// The plugin's UI passes the token it got from `ui-feed` in the environment, never on the
+	// command line, so it does not show up in the transcript.
+	const token = req.by === "user" ? process.env.OMP_TASK_UI_TOKEN : undefined;
+	const res = await client.call<ControlResponse>(
+		"POST",
+		`${jobPath(ref)}/control`,
+		token ? { ...req, token } : req,
+	);
+	if (!res.ok && res.code === "already_resolved" && res.resolved) {
+		out(alreadyResolvedText(res.resolved));
+		return EXIT_USAGE;
+	}
 	const okText =
 		req.kind === "steer"
 			? "steer sent"
@@ -411,7 +453,62 @@ async function control(client: Client, ref: string, req: ControlRequest): Promis
 				? "answer sent"
 				: `${req.decision ?? "approve"} sent${req.same ? " (and its command allowed from now on)" : req.rule ? ` (and rule '${req.rule}' added)` : ""}`;
 	out(res.ok ? okText : `error: ${res.error}`);
-	return res.ok ? 0 : EXIT_FAILED;
+	if (res.ok) return 0;
+	return res.code ? EXIT_USAGE : EXIT_FAILED;
+}
+
+/** `--by` of reply/approve (hidden: only the plugin's UI answers as the user). */
+function answeredBy(values: Values): ControlRequest["by"] {
+	const by = values.by as string | undefined;
+	if (by === undefined || by === "claude" || by === "user") return by;
+	throw new UsageError("--by takes claude or user");
+}
+
+/**
+ * The daemon for the UI commands. With --no-start they never start one: the UI polls, and
+ * must not keep a daemon alive (or bring one up) on its own.
+ */
+async function uiDaemon(values: Values): Promise<{ client: Client; health: Health } | null> {
+	if (values["no-start"]) return existingDaemon();
+	const client = await connect();
+	const health = await client.health();
+	return health ? { client, health } : null;
+}
+
+/** A daemon of an older version that lacks the UI routes answers 404 "no route ...". */
+function noRoute(e: unknown): boolean {
+	return e instanceof UsageError && e.message.startsWith(Client.NO_ROUTE);
+}
+
+const UI_OPTIONS = {
+	session: { type: "string" },
+	recent: { type: "string" },
+	json: { type: "boolean" },
+	"json-lines": { type: "boolean" },
+	"no-start": { type: "boolean" },
+} as const;
+
+function uiTarget(values: Values): { session: string; recentS: number } {
+	const session = (values.session as string | undefined) ?? process.env.OMP_TASK_CLAUDE_SESSION;
+	if (!session) throw new UsageError("--session is required");
+	const recent = values.recent as string | undefined;
+	const recentS =
+		recent === undefined ? uiSettings(safeLoadConfig()).recentS : (parseDuration(recent) ?? 0);
+	return { session, recentS };
+}
+
+/** The config for the UI commands: a broken file must not break the UI (other commands say why). */
+function safeLoadConfig(): Config {
+	try {
+		return loadConfig();
+	} catch {
+		return {};
+	}
+}
+
+/** What `ui-state`/`ui-feed` print when there is no snapshot: the daemon's state and the config. */
+function uiNoDaemon(state: { daemon: "down" } | { daemon: "outdated"; version: string }): string {
+	return JSON.stringify({ ...state, ui: uiSettings(safeLoadConfig()) });
 }
 
 // ---------------------------------------------------------------- commands
@@ -554,15 +651,24 @@ const commands: Record<string, Command> = {
 	},
 
 	async reply(argv) {
-		const { values, positionals } = parse(argv, { ...MESSAGE_OPTIONS, ref: { type: "string" } });
+		const { values, positionals } = parse(argv, {
+			...MESSAGE_OPTIONS,
+			ref: { type: "string" },
+			by: { type: "string" },
+			quiet: { type: "boolean" },
+		});
 		const [ref, ...rest] = positionals;
 		if (!ref) throw new UsageError("reply needs a job id");
 		const message = readText(values, rest);
-		return control(await connect(), ref, {
+		const req: ControlRequest = {
 			kind: "reply",
 			message,
 			ref: (values.ref as string | undefined) ?? null,
-		});
+		};
+		const by = answeredBy(values);
+		if (by) req.by = by;
+		if (values.quiet) req.quiet = true;
+		return control(await connect(), ref, req);
 	},
 
 	async approve(argv) {
@@ -572,9 +678,12 @@ const commands: Record<string, Command> = {
 			same: { type: "boolean" },
 			rule: { type: "string" },
 			ref: { type: "string" },
+			by: { type: "string" },
+			quiet: { type: "boolean" },
 		});
 		const [ref] = positionals;
 		if (!ref) throw new UsageError("approve needs a job id");
+		const by = answeredBy(values);
 		const chosen = ["session", "deny", "same", "rule"].filter((k) => values[k] !== undefined);
 		if (chosen.length > 1) {
 			throw new UsageError(`${chosen.map((k) => `--${k}`).join(" and ")} are exclusive`);
@@ -589,6 +698,8 @@ const commands: Record<string, Command> = {
 			decision,
 			ref: (values.ref as string | undefined) ?? null,
 		};
+		if (by) req.by = by;
+		if (values.quiet) req.quiet = true;
 		if (values.same) req.same = true;
 		if (values.rule !== undefined) {
 			const rule = (values.rule as string).trim();
@@ -834,6 +945,115 @@ const commands: Record<string, Command> = {
 		throw new UsageError(
 			"run install-binary through the plugin launcher: bin/omp-task install-binary",
 		);
+	},
+
+	// ---- hidden commands of the plugin's Claude Code UI (hooks/register.tsx)
+
+	/** One snapshot of a Claude session's jobs, as JSON. */
+	async "ui-state"(argv) {
+		const { values } = parse(argv, UI_OPTIONS);
+		const { session, recentS } = uiTarget(values);
+		const daemon = await uiDaemon(values);
+		if (!daemon) {
+			out(uiNoDaemon({ daemon: "down" }));
+			return 0;
+		}
+		const q = new URLSearchParams({ session, recent: String(recentS) });
+		try {
+			out(JSON.stringify(await daemon.client.call<UiSnapshot>("GET", `/v1/ui?${q}`)));
+		} catch (e) {
+			if (!noRoute(e)) throw e;
+			out(uiNoDaemon({ daemon: "outdated", version: daemon.health.version }));
+		}
+		return 0;
+	},
+
+	/**
+	 * One JSON line per event of the session's UI stream: {"token"}, then each snapshot, then
+	 * {"end":true} once the session has no active job.
+	 */
+	async "ui-feed"(argv) {
+		const { values } = parse(argv, UI_OPTIONS);
+		const { session, recentS } = uiTarget(values);
+		const daemon = await uiDaemon(values);
+		if (!daemon) {
+			out(uiNoDaemon({ daemon: "down" }));
+			return 0;
+		}
+		try {
+			for await (const event of daemon.client.uiStream(session, recentS)) {
+				if (event.type === "token") out(JSON.stringify({ token: event.token }));
+				else if (event.type === "snapshot") out(JSON.stringify(event.snapshot));
+				else {
+					out(JSON.stringify({ end: true }));
+					return 0;
+				}
+			}
+		} catch (e) {
+			if (!noRoute(e)) throw e;
+			out(uiNoDaemon({ daemon: "outdated", version: daemon.health.version }));
+			return 0;
+		}
+		throw new DaemonError("the daemon closed the UI stream before its end");
+	},
+
+	/**
+	 * Sets who decides a Claude session's questions and approvals until the daemon stops (`default`:
+	 * the config's). Only that session's UI may: it needs the token of an open `ui-feed`.
+	 */
+	async "ui-mode"(argv) {
+		const { values, positionals } = parse(argv, { session: { type: "string" } });
+		const { session } = uiTarget(values);
+		const [mode] = positionals;
+		const decider = mode === "default" ? null : DECIDERS.find((d) => d === mode);
+		if (decider === undefined) {
+			throw new UsageError(`ui-mode takes ${DECIDERS.join(", ")} or default`);
+		}
+		const token = process.env.OMP_TASK_UI_TOKEN;
+		if (!token) throw new UsageError("ui-mode is for the Claude Code UI (no UI token)");
+		const daemon = await existingDaemon();
+		if (!daemon) throw new DaemonError("the omp-task daemon is not running");
+		const res = await daemon.client.call<ControlResponse>(
+			"PUT",
+			`/v1/sessions/${encodeURIComponent(session)}/ui`,
+			{ decider, token },
+		);
+		out(res.ok ? `decider: ${decider ?? "config default"}` : `error: ${res.error}`);
+		return res.ok ? 0 : EXIT_USAGE;
+	},
+
+	/** Waits until a question or approval is no longer open (or --max-wait), as JSON. */
+	async "await-ref"(argv) {
+		const { values, positionals } = parse(argv, {
+			"max-wait": { type: "string" },
+			json: { type: "boolean" },
+		});
+		const [job, ref] = positionals;
+		if (!job || !ref) throw new UsageError("await-ref needs a job id and a ref");
+		const maxWaitS = Math.min(
+			num(values["max-wait"], "--max-wait") ?? MAX_AWAIT_REF_S,
+			MAX_AWAIT_REF_S,
+		);
+		// The UI polls this: it must never start a daemon, or replace an idle one of another version.
+		const daemon = await existingDaemon();
+		if (!daemon) {
+			out(JSON.stringify({ state: "gone" }));
+			return 0;
+		}
+		const { client } = daemon;
+		const deadline = performance.now() + maxWaitS * 1000;
+		while (true) {
+			const remaining = Math.max(0, (deadline - performance.now()) / 1000);
+			const q = new URLSearchParams({ wait: String(Math.min(LONG_POLL_S, remaining)) });
+			const state = await client.call<PendingState>(
+				"GET",
+				`${jobPath(job)}/pending/${encodeURIComponent(ref)}?${q}`,
+			);
+			if (state.state !== "open" || performance.now() >= deadline) {
+				out(JSON.stringify(state));
+				return 0;
+			}
+		}
 	},
 
 	async hook(argv) {

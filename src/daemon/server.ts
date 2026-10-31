@@ -3,6 +3,7 @@
  * HTTP API on a unix socket. It starts on demand (the CLI spawns it), stops after a while with
  * nothing to do, and on start marks jobs it was running when it last stopped as `interrupted`.
  */
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, unlinkSync } from "node:fs";
 import type { Server } from "bun";
 import type { z } from "zod";
@@ -17,6 +18,7 @@ import {
 	type GroupSummary,
 	type Health,
 	type JobView,
+	type PendingState,
 	type PlanResponse,
 	type PruneResponse,
 	planBody,
@@ -25,14 +27,18 @@ import {
 	type SessionEndResponse,
 	sessionEndBody,
 	shutdownBody,
+	type UiJob,
+	type UiSnapshot,
+	type UiStreamEvent,
+	uiModeBody,
 	type WaitResponse,
 	type WaitView,
 } from "../api/schema";
-import { type Config, loadConfig } from "../core/config";
+import { type Config, type Decider, loadConfig, type UiSettings, uiSettings } from "../core/config";
 import { createJob, NotFoundError, resolveJob } from "../core/jobs";
 import { socketPath } from "../core/paths";
 import { orderPlan } from "../core/plan";
-import { READ_ONLY_RULE } from "../core/policy";
+import { approvalSubject, isShortened, READ_ONLY_RULE } from "../core/policy";
 import { JobRunner } from "../core/runner";
 import { Store } from "../core/store";
 import { isActive, isTerminal, type Job } from "../core/types";
@@ -54,6 +60,15 @@ const SSE_HEARTBEAT_MS = 15_000;
 const HOUSEKEEPING_MS = 24 * 3600_000;
 /** Notices `wait` returns for; `--no-checkpoint` leaves checkpoints in the feed only. */
 const NOTICE_KINDS = ["checkpoint", "stalled"] as const;
+/** Longest a single pending-item request (`omp-task await-ref`) is held open. */
+const MAX_PENDING_WAIT_S = 600;
+/** Changes within this long go out as one UI snapshot. */
+const UI_DEBOUNCE_MS = 250;
+/** How long the daemon reuses the config's `ui` block before reading the file again. */
+const UI_CONFIG_TTL_MS = 1000;
+/** Most jobs of one session a UI snapshot looks at. */
+const UI_MAX_JOBS = 200;
+const UI_ACTIVITY_CHARS = 200;
 
 /** Whether a job belongs to this Claude session, or to none (started outside Claude Code). */
 function sameSession(job: Job, session: string): boolean {
@@ -72,6 +87,12 @@ function groupSharedWith(store: Store, job: Job): string | null {
 		`session (${others.map((j) => j.id).join(", ")}); \`wait --group\` covers only this ` +
 		"session's jobs, but group limits and budgets are shared. A group name of your own avoids that."
 	);
+}
+
+/** A non-negative number of seconds from a query parameter, or the fallback. */
+function seconds(value: string | null, fallback: number): number {
+	const n = Number(value ?? Number.NaN);
+	return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 /** The config, or an empty one when it is broken (the CLI reports that on its own commands). */
@@ -129,15 +150,53 @@ export class Daemon {
 	#server: Server<undefined> | null = null;
 	/** Open `wait` and `watch` requests: the daemon is not idle while anyone is listening. */
 	#clients = 0;
+	/** Tokens of the open UI streams (GET /v1/ui/stream) → their Claude session. */
+	readonly #uiTokens = new Map<string, string>();
+	/** Deciders a session's UI chose (`ui-mode`) over the config's; gone when the daemon stops. */
+	readonly #deciders = new Map<string, Decider>();
+	#uiCache: { at: number; ui: UiSettings } | null = null;
 	#lastActivity = performance.now();
 	#idleTimer: ReturnType<typeof setInterval> | null = null;
 	#housekeepingTimer: ReturnType<typeof setInterval> | null = null;
 	#stopping: Promise<void> | null = null;
 
 	constructor() {
-		this.store.onChange = () => {
-			for (const wake of [...this.#waiters]) wake();
-		};
+		this.store.onChange = () => this.#poke();
+	}
+
+	/** Wakes every request waiting for a change (`wait`, the streams, `await-ref`). */
+	#poke(): void {
+		for (const wake of [...this.#waiters]) wake();
+	}
+
+	/** The config's `ui` block, read at most once a second (`wait` asks for it on every change). */
+	#uiSettings(): UiSettings {
+		const now = performance.now();
+		if (!this.#uiCache || now - this.#uiCache.at > UI_CONFIG_TTL_MS) {
+			this.#uiCache = { at: now, ui: uiSettings(safeConfig()) };
+		}
+		return this.#uiCache.ui;
+	}
+
+	/** The decider in force for a Claude session: its UI's choice, else the config's. */
+	#decider(session: string | null): Decider {
+		if (!session) return "claude";
+		return this.#deciders.get(session) ?? this.#uiSettings().decider;
+	}
+
+	/** Whether a UI stream of this Claude session is open. */
+	#uiConnected(session: string | null): boolean {
+		if (!session) return false;
+		for (const s of this.#uiTokens.values()) if (s === session) return true;
+		return false;
+	}
+
+	/**
+	 * Whether `wait` holds back a job's questions and approvals: its session hands them to the user
+	 * and that session's UI is there to ask. Without a UI they go to Claude as usual.
+	 */
+	#heldForUser(job: Job): boolean {
+		return this.#decider(job.claudeSession) === "user" && this.#uiConnected(job.claudeSession);
 	}
 
 	/** Takes the lock and the socket; false when another daemon already serves this state dir. */
@@ -358,9 +417,16 @@ export class Daemon {
 			return json({ ok: true });
 		}
 		if (resource === "wait" && method === "GET") return this.#wait(url);
+		if (resource === "ui" && method === "GET") {
+			if (!ref) return json(this.#uiSnapshot(...this.#uiParams(url)));
+			if (ref === "stream") return this.#uiStream(url);
+		}
 		if (resource === "feed" && method === "GET") return this.#feed(url);
 		if (resource === "prune" && method === "POST") return this.#prune(await body(req, pruneBody));
 		if (resource === "plans" && method === "POST") return this.#plan(await body(req, planBody));
+		if (resource === "sessions" && ref && action === "ui" && method === "PUT") {
+			return this.#uiMode(ref, await body(req, uiModeBody));
+		}
 		if (resource === "sessions" && ref && action === "end" && method === "POST") {
 			return this.#sessionEnd(ref, await body(req, sessionEndBody));
 		}
@@ -388,6 +454,9 @@ export class Daemon {
 			if (ref && !action && method === "GET") return json(this.#view(resolveJob(this.store, ref)));
 			if (ref && action === "control" && method === "POST") {
 				return this.#control(resolveJob(this.store, ref), await body(req, controlBody));
+			}
+			if (ref && action === "pending" && parts[4] && method === "GET") {
+				return this.#pendingState(resolveJob(this.store, ref), parts[4], url);
 			}
 			if (ref && action === "diff" && method === "GET") return this.#diff(ref);
 			if (ref && action === "apply" && method === "POST") {
@@ -518,8 +587,36 @@ export class Daemon {
 		return json(res);
 	}
 
-	#control(job: Job, b: z.infer<typeof controlBody>): Response {
+	#control(job: Job, body: z.infer<typeof controlBody>): Response {
+		const { token, ...b } = body;
+		if (b.by === "user") {
+			// Only the UI of the job's own Claude session answers as the user: the history must not
+			// credit the user with an answer the orchestrator gave.
+			const session = token ? this.#uiTokens.get(token) : undefined;
+			if (!session || session !== job.claudeSession) {
+				const res: ControlResponse = {
+					ok: false,
+					code: "ui_token_required",
+					error: "--by user is for the Claude Code UI of the job's session (no valid UI token)",
+				};
+				return json(res);
+			}
+		}
 		const runner = this.#runners.get(job.id);
+		const settled =
+			(b.kind === "reply" || b.kind === "approve") && b.ref && !runner
+				? this.store.getResolved(job.id, b.ref)
+				: null;
+		if (settled) {
+			// Answered before the job ended (often the very answer that let it end).
+			const res: ControlResponse = {
+				ok: false,
+				code: "already_resolved",
+				error: `${settled.kind} ${settled.ref} was already settled by ${settled.by}`,
+				resolved: settled,
+			};
+			return json(res);
+		}
 		if (!runner) {
 			const idle = ["interrupted", "queued", "blocked"].includes(job.status);
 			if (idle && b.kind === "abort") {
@@ -630,7 +727,11 @@ export class Daemon {
 		this.#clients++;
 		try {
 			while (true) {
-				const views = jobIds.map((id) => this.#view(this.store.getJob(id) as Job));
+				const views = jobIds.map((id) => {
+					const view = this.#view(this.store.getJob(id) as Job);
+					// The user answers these in the UI: Claude neither wakes for them nor sees them.
+					return this.#heldForUser(view.job) ? { ...view, pending: [] } : view;
+				});
 				const noticed = (v: JobView) =>
 					!isTerminal(v.job.status) && v.job.notices.some((n) => kinds.includes(n.kind));
 				const needs = views.some(
@@ -641,11 +742,21 @@ export class Daemon {
 				else if (views.every((v) => isTerminal(v.job.status))) reason = "done";
 				else if (performance.now() >= deadline) reason = "timeout";
 				if (reason) {
-					const jobs: WaitView[] = views.map((v) => ({
-						...v,
-						delivered:
-							reason === "attention" && noticed(v) ? this.store.takeNotices(v.job.id, kinds) : [],
-					}));
+					const jobs: WaitView[] = views.map((v) => {
+						if (reason === "attention" && v.pending.length) {
+							this.store.markDelivered(
+								v.job.id,
+								v.pending.map((p) => p.ref),
+							);
+						}
+						return {
+							...v,
+							delivered:
+								reason === "attention" && noticed(v) ? this.store.takeNotices(v.job.id, kinds) : [],
+							// A timeout answer prints nothing, so it must not use these up.
+							resolved: reason === "timeout" ? [] : this.store.takeResolvedReports(v.job.id),
+						};
+					});
 					const res: WaitResponse = { reason, jobs };
 					return json(res);
 				}
@@ -655,6 +766,182 @@ export class Daemon {
 			this.#clients--;
 			this.#lastActivity = performance.now();
 		}
+	}
+
+	/** Whether a question or approval is still open; with `wait`, holds the request until it is not. */
+	async #pendingState(job: Job, ref: string, url: URL): Promise<Response> {
+		const waitS = Math.min(seconds(url.searchParams.get("wait"), 0), MAX_PENDING_WAIT_S);
+		const deadline = performance.now() + waitS * 1000;
+		this.#clients++;
+		try {
+			while (true) {
+				const state = this.#pendingNow(job.id, ref);
+				if (state.state !== "open" || performance.now() >= deadline) return json(state);
+				await this.#nextChange(deadline - performance.now());
+			}
+		} finally {
+			this.#clients--;
+			this.#lastActivity = performance.now();
+		}
+	}
+
+	#pendingNow(jobId: string, ref: string): PendingState {
+		if (this.store.listPending(jobId).some((p) => p.ref === ref)) return { state: "open" };
+		const r = this.store.getResolved(jobId, ref);
+		if (!r) return { state: "gone" }; // the job ended, or the worker withdrew its question
+		return {
+			state: "resolved",
+			by: r.by,
+			decision: r.decision,
+			rule: r.rule,
+			answerPreview: r.answerPreview,
+			at: r.resolvedAt,
+		};
+	}
+
+	#uiParams(url: URL): [string, number] {
+		const session = url.searchParams.get("session");
+		if (!session) throw new HttpError(400, "session is required");
+		const fallback = this.#uiSettings().recentS;
+		return [session, seconds(url.searchParams.get("recent"), fallback)];
+	}
+
+	/** A Claude session's jobs as its UI shows them: active or interrupted, or ended recently. */
+	#uiSnapshot(session: string, recentS: number): UiSnapshot {
+		const cutoff = Date.now() - recentS * 1000;
+		const jobs = this.store
+			.listJobs({ limit: UI_MAX_JOBS, claudeSession: session })
+			.filter(
+				(j) =>
+					isActive(j.status) ||
+					j.status === "interrupted" ||
+					(j.finishedAt !== null && Date.parse(j.finishedAt) >= cutoff),
+			);
+		const ui = this.#uiSettings();
+		const own = this.#deciders.get(session);
+		return {
+			daemon: "up",
+			version: VERSION,
+			generatedAt: nowIso(),
+			decider: own ?? ui.decider,
+			deciderSource: own ? "session" : "config",
+			ui,
+			jobs: jobs.map((j) => this.#uiJob(j)),
+		};
+	}
+
+	#uiJob(j: Job): UiJob {
+		const last = this.store.lastFeed(j.id);
+		return {
+			id: j.id,
+			title: j.title || null,
+			status: j.status,
+			model: j.modelUsed ?? j.modelResolved ?? j.model,
+			access: j.access,
+			group: j.groupName,
+			startedAt: j.startedAt,
+			finishedAt: j.finishedAt,
+			durationS: j.durationS,
+			costUsd: j.costUsd,
+			budgetUsd: j.budgetUsd,
+			queueReason: j.status === "queued" ? (this.#queueReasons.get(j.id) ?? null) : null,
+			worktreePath: j.worktreePath,
+			lastActivity: last
+				? { ts: last.ts, kind: last.kind, text: last.text.slice(0, UI_ACTIVITY_CHARS) }
+				: null,
+			pending: this.store.listPending(j.id).map((p) => ({
+				...p,
+				shortened: p.kind === "approval" && isShortened(p.text),
+				subject: p.kind === "approval" ? approvalSubject(p.text) : p.text,
+			})),
+			changedFiles: j.changedFiles?.length ?? null,
+			cwd: j.worktreePath ?? j.cwd,
+		};
+	}
+
+	/**
+	 * Server-sent events for the Claude Code UI of one session: a `token` (it lets the UI answer
+	 * as the user while this stream is open), then a `snapshot` whenever the session's jobs change
+	 * (changes within UI_DEBOUNCE_MS go out together), then `end` once none of them is active, so
+	 * an open UI never keeps an idle daemon alive.
+	 */
+	#uiStream(url: URL): Response {
+		const [session, recentS] = this.#uiParams(url);
+		const token = randomBytes(32).toString("base64url");
+		const encoder = new TextEncoder();
+		const daemon = this;
+		let closed = false;
+		const stream = new ReadableStream<Uint8Array>({
+			async start(controller) {
+				daemon.#clients++;
+				daemon.#uiTokens.set(token, session);
+				const send = (event: UiStreamEvent) =>
+					controller.enqueue(
+						encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`),
+					);
+				try {
+					send({ type: "token", token });
+					let sent = "";
+					let lastBeat = performance.now();
+					while (!closed) {
+						const snapshot = daemon.#uiSnapshot(session, recentS);
+						const key = JSON.stringify({ ...snapshot, generatedAt: "" });
+						if (key !== sent) {
+							sent = key;
+							send({ type: "snapshot", snapshot });
+							lastBeat = performance.now();
+						}
+						if (!snapshot.jobs.some((j) => isActive(j.status))) {
+							send({ type: "end" });
+							break;
+						}
+						if (performance.now() - lastBeat > SSE_HEARTBEAT_MS) {
+							controller.enqueue(encoder.encode(": keep-alive\n\n"));
+							lastBeat = performance.now();
+						}
+						await daemon.#nextChange(SSE_HEARTBEAT_MS);
+						if (!closed) await Bun.sleep(UI_DEBOUNCE_MS);
+					}
+					controller.close();
+				} catch {
+					// the client went away
+				} finally {
+					daemon.#uiGone(token);
+					daemon.#clients--;
+					daemon.#lastActivity = performance.now();
+				}
+			},
+			cancel() {
+				closed = true;
+				daemon.#uiGone(token);
+			},
+		});
+		return new Response(stream, {
+			headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+		});
+	}
+
+	/** A UI stream closed: a `wait` that held its session's items for the user hands them over. */
+	#uiGone(token: string): void {
+		if (this.#uiTokens.delete(token)) this.#poke();
+	}
+
+	/** PUT /v1/sessions/<id>/ui: only that session's UI picks who decides its items. */
+	#uiMode(session: string, b: z.infer<typeof uiModeBody>): Response {
+		if (this.#uiTokens.get(b.token) !== session) {
+			const res: ControlResponse = {
+				ok: false,
+				code: "ui_token_required",
+				error: "ui-mode is for the Claude Code UI of that session (no valid UI token)",
+			};
+			return json(res);
+		}
+		if (b.decider) this.#deciders.set(session, b.decider);
+		else this.#deciders.delete(session);
+		log("info", "ui decider", { session, decider: b.decider ?? "config" });
+		this.#poke();
+		const res: ControlResponse = { ok: true };
+		return json(res);
 	}
 
 	/** Server-sent events: one `feed` event per feed line, then `end` once every job has ended. */

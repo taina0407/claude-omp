@@ -40,6 +40,9 @@ You → Claude ── brief / answers / approvals ──→ omp-task
 - **Kiểm tra có cấu trúc.** Mô hình kiểm tra thông thường và mô hình kiểm tra đối kháng trả về
   các phát hiện đã được kiểm tra tính hợp lệ. Có thể bật hook (điểm móc tự động) Stop để kiểm
   tra thay đổi trước khi Claude kết thúc một lượt.
+- **Theo dõi trực tiếp trong Claude Code.** Một dải phía trên ô nhập và pane `/omp-jobs` hiện
+  các job của phiên này khi chúng chạy; câu hỏi hay yêu cầu phê duyệt của worker mà bạn cần
+  quyết định sẽ mở bằng hộp thoại của chính Claude Code.
 - **Lưu giữ job.** Xem kết quả đã lưu, tiếp tục job bị gián đoạn hoặc tiếp tục phiên omp của
   một job đã hoàn tất với phản hồi cụ thể.
 
@@ -47,8 +50,8 @@ You → Claude ── brief / answers / approvals ──→ omp-task
 
 ### Yêu cầu
 
-- [Claude Code](https://code.claude.com) **2.1.91+** để hỗ trợ `bin/` của plugin trên PATH
-  của công cụ Bash.
+- [Claude Code](https://code.claude.com) **2.1.316+**: `bin/` của plugin trên PATH của công cụ
+  Bash, và hooks module của plugin (dải trạng thái, pane, hộp thoại).
 - [Bun](https://bun.sh) **1.3+**, hoặc tệp nhị phân phát hành phù hợp cho `omp-task`. Bản omp
   gốc vẫn cần được cài đặt riêng và hoạt động bình thường.
 - Có `omp` **18.12+** trên PATH và đã xác thực với nhà cung cấp. Làm theo
@@ -188,10 +191,46 @@ Yêu cầu bằng ngôn ngữ thông thường hoặc gọi lệnh có tiền t�
 | `/omp:cancel JOB` | Hủy một job; mặc định, phụ thuộc không thành công khiến các job phụ thuộc bị bỏ qua. |
 | `/omp:transfer` | In lệnh để tiếp tục nội dung hội thoại này trong omp tương tác. |
 | `/omp:setup [--stop-gate on\|off]` | Tạo cấu hình còn thiếu, in chẩn đoán và tùy chọn bật/tắt cổng kiểm tra Stop. |
+| `/omp-jobs` | Mở pane danh sách job (do hooks module của plugin cung cấp). |
+| `/omp-mode [claude\|both\|user\|default]` | Ai quyết định câu hỏi và yêu cầu phê duyệt của worker trong phiên này. |
 
 Các lệnh kiểm tra báo cáo phát hiện mà không thay đổi mã. Claude kiểm chứng các tình huống
 được viện dẫn; các phát hiện vẫn là nhận định cần đánh giá, không phải chỉ dẫn phải làm theo.
 Cổng kiểm tra Stop mặc định tắt trừ khi được bật.
+
+## Job trong giao diện Claude Code
+
+Hooks module của plugin ([hooks/register.tsx](hooks/register.tsx)) hiện các job của phiên
+Claude Code hiện tại; job của phiên khác hoặc chạy từ terminal riêng không hiện.
+
+- **Dải trạng thái** phía trên ô nhập: `omp ▸ 2 running · 1 queued · ⚠ 1 needs you · $0.42`,
+  kèm `[Jobs]` và `[Hide]`. Màu vàng khi có việc chờ bạn, màu đỏ khi có job vừa thất bại.
+- **Pane `/omp-jobs`**: trạng thái, mô hình, quyền, thời gian, chi phí, hoạt động gần nhất và
+  việc đang chờ của từng job, với `[Review]` (mở việc chờ), `[Cancel]` (hỏi lại trước) và
+  `[Details]` (`omp-task status`). Áp dụng, loại bỏ và tiếp tục job vẫn do Claude làm.
+- **Toast** khi job kết thúc, và **thông báo** của hệ thống khi job thất bại hoặc cần bạn.
+
+**Ai quyết định.** Mặc định Claude trả lời worker (chế độ `claude`). Khi một việc thuộc về bạn,
+Claude gọi tool `ask_user` của plugin: câu hỏi có 2–4 lựa chọn mở hộp thoại câu hỏi của Claude
+Code; trường hợp khác (và mọi yêu cầu phê duyệt) mở một pane hộp thoại. Giá trị gửi cho worker
+luôn là một lựa chọn của chính nó, đúng nguyên văn, hoặc chữ bạn gõ; câu trả lời hộp thoại tự
+chọn khi bạn vắng mặt không bao giờ được gửi. `/omp-mode both` mở hộp thoại cho mọi việc chờ
+mới, đồng thời Claude vẫn được đánh thức như thường; `/omp-mode user` giao việc chờ cho riêng
+bạn (Claude không bị đánh thức vì chúng khi UI đang kết nối, và nhận lại ngay khi UI mất kết
+nối). `/omp-mode default` quay về `ui.decider` trong cấu hình. Ai trả lời trước thắng: lệnh
+`reply`/`approve` đến muộn của Claude thoát với mã 2 kèm `already ... by the user`.
+
+Hộp thoại phê duyệt ánh xạ mỗi nút sang đúng một lệnh CLI: Allow once (`a`), Allow this exact
+command (`s`), Allow rule… (`r`, điền sẵn tiền tố của lệnh), Allow tool for the session (`t`),
+Deny (`d`) và Deny with message… (`m`: từ chối rồi gửi lời nhắn cho worker). Nếu daemon từ
+chối rule, hộp thoại giữ nguyên và hiện nguyên văn lỗi. Trên terminal hẹp, hộp thoại không tự
+mở: dải trạng thái hiện `[Review]` và bạn nhận một thông báo.
+
+UI chỉ nói chuyện với daemon qua `omp-task` (các lệnh ẩn `ui-state`, `ui-feed`, `await-ref`,
+`ui-mode`); luồng dữ liệu kết thúc cùng job đang hoạt động cuối cùng của phiên, nên không giữ
+daemon sống khi rảnh. Chỉ token của luồng đó mới cho phép một lệnh được ghi là của người dùng
+(`--by user`). Chế độ không giao diện (`claude -p`, SDK) không vẽ gì và Claude vẫn là người
+quyết định duy nhất.
 
 ## Tham chiếu CLI
 
@@ -402,6 +441,10 @@ khi worktree đó bị xóa. `event_log` quyết định `events.jsonl` của jo
 các delta), `full` giữ nguyên mọi frame (có thể lên tới hàng GB với câu trả lời dài), và `off`
 không ghi event log.
 
+`ui` cấu hình giao diện trong Claude Code: `decider` (`claude`, `both` hoặc `user`; mặc định
+`claude`), `notify` (thông báo của hệ thống; mặc định `true`), `band` (`auto`: khi phiên có
+job, `always`, hoặc `off`) và `recent` (job đã kết thúc còn hiện bao lâu; mặc định `10m`).
+
 `stop_gate` tùy chọn mặc định dùng mô hình `smol`, thời gian tối đa `3m`, mức nghiêm trọng
 tối thiểu `high` và tối đa 3 lần kiểm tra mỗi phiên Claude. Bật bằng
 `/omp:setup --stop-gate on`; dùng `off` để tắt. Cổng này bỏ qua diff không thay đổi và các
@@ -508,7 +551,12 @@ bun run check
 claude plugin validate . --strict
 ```
 
-`check` chạy kiểm tra TypeScript, Biome và bộ kiểm thử. Kiểm thử thông thường điều khiển CLI
+```bash
+bun run test:mod
+```
+
+`check` chạy kiểm tra TypeScript, Biome và bộ kiểm thử. `test:mod` chạy kiểm thử của hooks
+module ([hooks/register.test.tsx](hooks/register.test.tsx)) bằng `claude plugin test`. Kiểm thử thông thường điều khiển CLI
 và daemon thật với omp giả lập, đồng thời phát lại dữ liệu RPC mẫu đã ghi, nên không cần
 truy cập nhà cung cấp. Kiểm thử hợp đồng với nhà cung cấp thật bị bỏ qua trừ khi được bật rõ.
 

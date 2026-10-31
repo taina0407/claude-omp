@@ -1,5 +1,5 @@
 {
-  "description": "omp plugin: remember the Claude session for omp jobs, optionally cancel them when it ends, and the opt-in Stop review gate.",
+  "description": "omp plugin: remember the Claude session for omp jobs, optionally cancel them when it ends, the opt-in Stop review gate, and the Claude Code UI for omp jobs (register.tsx).",
   "hooks": {
     "SessionStart": [
       {
@@ -34,5 +34,8 @@
         ]
       }
     ]
-  }
+  },
+  "modules": [
+    "./register.tsx"
+  ]
 }

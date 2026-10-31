@@ -5,9 +5,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { configFile } from "./paths";
-import { UsageError } from "./util";
+import { parseDuration, UsageError } from "./util";
 
 const duration = z.union([z.string(), z.number()]);
+
+/** Who decides the workers' questions and approvals in a Claude session (`ui.decider`). */
+export const DECIDERS = ["claude", "both", "user"] as const;
+export type Decider = (typeof DECIDERS)[number];
 
 const settings = z.looseObject({
 	model: z.string().optional(),
@@ -59,6 +63,23 @@ const configSchema = z.looseObject({
 	groups: z.record(z.string(), groupLimits).optional(),
 	/** When a Claude Code session ends: keep its running jobs (default) or cancel them. */
 	on_session_end: z.enum(["keep", "cancel"]).optional(),
+	/** The plugin's Claude Code UI (band, pane, dialogs). */
+	ui: z
+		.looseObject({
+			/**
+			 * Who answers the workers' questions and approvals: claude (default; it may hand one to
+			 * the user), both (the UI asks the user and Claude is woken too), or user (the UI asks
+			 * the user; Claude is woken only while no UI is connected).
+			 */
+			decider: z.enum(DECIDERS).optional(),
+			/** Native notifications when a job needs the user or fails (default true). */
+			notify: z.boolean().optional(),
+			/** The band above the prompt: auto (while the session has jobs; default), always, off. */
+			band: z.enum(["auto", "always", "off"]).optional(),
+			/** How long finished jobs stay on the band and in the pane (default 10m). */
+			recent: duration.optional(),
+		})
+		.optional(),
 	/** Opt-in Stop hook: review uncommitted changes before Claude finishes a turn. */
 	stop_gate: z
 		.looseObject({
@@ -121,4 +142,34 @@ export function pickSetting<K extends keyof Settings>(
 		sources.defaults[key] ??
 		fallback
 	);
+}
+
+/** The `ui` block with its defaults filled in. */
+export interface UiSettings {
+	decider: Decider;
+	notify: boolean;
+	band: "auto" | "always" | "off";
+	/** Seconds finished jobs stay on the UI. */
+	recentS: number;
+}
+
+export const DEFAULT_UI_RECENT_S = 600;
+
+export function uiSettings(config: Config): UiSettings {
+	const ui = config.ui ?? {};
+	return {
+		decider: ui.decider ?? "claude",
+		notify: ui.notify ?? true,
+		band: ui.band ?? "auto",
+		recentS: recentSeconds(ui.recent),
+	};
+}
+
+function recentSeconds(value: string | number | undefined): number {
+	if (value === undefined) return DEFAULT_UI_RECENT_S;
+	try {
+		return parseDuration(value) ?? 0;
+	} catch {
+		return DEFAULT_UI_RECENT_S;
+	}
 }

@@ -8,7 +8,7 @@
 
 /** Variables that tie a process to one Claude Code session or one terminal pane. */
 const SESSION_VARS =
-	/^(CLAUDECODE|CLAUDE_CODE_.*|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_ENV_FILE|CLAUDE_PROJECT_DIR|OMP_TASK_CLAUDE_SESSION|ORCA_.*|TMUX_PANE|TERM_SESSION_ID|ITERM_SESSION_ID|KITTY_WINDOW_ID|WEZTERM_PANE|ZELLIJ_PANE_ID|WINDOWID)$/;
+	/^(CLAUDECODE|CLAUDE_CODE_.*|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_ENV_FILE|CLAUDE_PROJECT_DIR|OMP_TASK_CLAUDE_SESSION|OMP_TASK_UI_TOKEN|ORCA_.*|TMUX_PANE|TERM_SESSION_ID|ITERM_SESSION_ID|KITTY_WINDOW_ID|WEZTERM_PANE|ZELLIJ_PANE_ID|WINDOWID)$/;
 
 /** `env` without the variables of the session or pane it was inherited from. */
 export function detachedEnv(env: Record<string, string | undefined>): Record<string, string> {

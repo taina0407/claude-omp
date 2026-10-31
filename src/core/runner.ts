@@ -38,6 +38,7 @@ import type {
 	JobStatus,
 	NoticeKind,
 	PendingKind,
+	ResolvedBy,
 	ShellCall,
 	TerminalStatus,
 } from "./types";
@@ -60,6 +61,8 @@ const STALL_SAME_FAILURES = 3;
 const RESULT_INJECT_CHARS = 12_000;
 /** A checkpoint is the worker's summary for the orchestrator: keep all of a normal one. */
 const CHECKPOINT_CHARS = 4_000;
+/** How much of an answer the resolved-items record keeps. */
+const ANSWER_PREVIEW_CHARS = 200;
 const QUESTION_EXPIRED_ANSWER =
 	"No answer from the orchestrator in time. Make the most reasonable assumption, continue, " +
 	"and list the assumption under Open issues.";
@@ -615,18 +618,36 @@ export class JobRunner {
 			case "reply":
 			case "approve": {
 				const kind: PendingKind = cmd.kind === "reply" ? "question" : "approval";
+				const by = cmd.by ?? "claude";
 				const ref = cmd.ref ?? null;
-				const match = [...this.#pending.entries()].find(
-					([r, p]) => p.kind === kind && (!ref || r === ref),
-				);
+				const open = [...this.#pending.entries()].filter(([, p]) => p.kind === kind);
+				if (!ref && open.length > 1) {
+					// The oldest is not necessarily the one the caller read: the user may have just
+					// answered that one, and the answer would land on another question.
+					return {
+						ok: false,
+						code: "ref_required",
+						error: `${open.length} pending ${kind}s; pick one with --ref: ${open.map(([r]) => r).join(", ")}`,
+					};
+				}
+				const match = open.find(([r]) => !ref || r === ref);
 				if (!match) {
+					const resolved = ref ? this.#store.getResolved(this.#jobId, ref) : null;
+					if (resolved) {
+						return {
+							ok: false,
+							code: "already_resolved",
+							error: `${resolved.kind} ${ref} was already settled by ${resolved.by}`,
+							resolved,
+						};
+					}
 					return { ok: false, error: `no pending ${kind}${ref ? ` with ref ${ref}` : ""}` };
 				}
 				const [r, item] = match;
 				if (cmd.kind === "reply") {
 					const message = cmd.message ?? "";
-					this.#resolvePending(r, message);
-					this.#feed("answered", message.slice(0, 300), { ref: r });
+					this.#resolvePending(r, by, { answer: message, quiet: cmd.quiet === true });
+					this.#feed("answered", message.slice(0, 300), { ref: r, by });
 				} else {
 					const decision: ApprovalDecision = cmd.decision ?? "approve";
 					const rule = cmd.same ? literalRule(approvalSubject(item.text)) : cmd.rule?.trim();
@@ -635,9 +656,10 @@ export class JobRunner {
 						const error = this.#addAllowRule(rule, item);
 						if (error) return { ok: false, error };
 					}
-					this.#resolvePending(r, null, decision);
+					this.#resolvePending(r, by, { decision, rule: rule ?? null, quiet: cmd.quiet === true });
 					this.#feed(`approval-${decision}`, item.text.slice(0, 200), {
 						ref: r,
+						by,
 						...(rule ? { rule } : {}),
 					});
 					if (rule) this.#recheckApprovals();
@@ -698,27 +720,41 @@ export class JobRunner {
 			if (item.kind !== "approval") continue;
 			const rule = decideApproval(item.tool ?? "", item.text, this.#approvalRules(), item.shell);
 			if (!rule) continue;
-			this.#resolvePending(ref, null, rule.decision);
+			this.#resolvePending(ref, "rule", { decision: rule.decision, rule: rule.rule });
 			this.#feed(`auto-${rule.decision}`, `${item.tool}: ${item.text}`.slice(0, 200), {
 				rule: rule.rule,
 			});
 		}
 	}
 
+	/** Sends the answer or decision to the worker and records who settled the item. */
 	#resolvePending(
 		ref: string,
-		answer: string | null,
-		decision?: "approve" | "session" | "deny",
+		by: ResolvedBy,
+		how: { answer?: string; decision?: ApprovalDecision; rule?: string | null; quiet?: boolean },
 	): void {
 		const item = this.#pending.get(ref);
 		if (!item) return;
 		this.#pending.delete(ref);
-		this.#store.removePending(this.#jobId, ref);
-		if (item.kind === "question") this.#session?.answer(ref, answer ?? "");
+		const answer = how.answer ?? "";
+		const decision = how.decision ?? "deny";
+		this.#store.resolvePending(
+			{
+				jobId: this.#jobId,
+				ref,
+				kind: item.kind,
+				by,
+				decision: item.kind === "approval" ? decision : null,
+				rule: item.kind === "approval" ? (how.rule ?? null) : null,
+				answerPreview: item.kind === "question" ? answer.slice(0, ANSWER_PREVIEW_CHARS) : null,
+				resolvedAt: nowIso(),
+			},
+			how.quiet === true,
+		);
+		if (item.kind === "question") this.#session?.answer(ref, answer);
 		else {
-			const d = decision ?? "deny";
-			if (d === "deny" && item.tool) this.#denied.add(item.tool);
-			this.#session?.decide(ref, d);
+			if (decision === "deny" && item.tool) this.#denied.add(item.tool);
+			this.#session?.decide(ref, decision);
 		}
 		this.#syncWaiting();
 	}
@@ -731,8 +767,9 @@ export class JobRunner {
 		for (const [ref, item] of this.#pending) {
 			const limit = limits[item.kind];
 			if (!limit || now - item.since <= limit * 1000) continue;
-			if (item.kind === "question") this.#resolvePending(ref, QUESTION_EXPIRED_ANSWER);
-			else this.#resolvePending(ref, null, "deny");
+			if (item.kind === "question") {
+				this.#resolvePending(ref, "expired", { answer: QUESTION_EXPIRED_ANSWER });
+			} else this.#resolvePending(ref, "expired", { decision: "deny" });
 			this.#feed("info", `${item.kind} ${ref} expired without a reply`);
 		}
 	}
@@ -742,8 +779,9 @@ export class JobRunner {
 		this.#abortDeadline = performance.now() + ABORT_GRACE_MS;
 		this.#session?.abort();
 		for (const [ref, item] of [...this.#pending]) {
-			if (item.kind === "question") this.#resolvePending(ref, "Task aborted by orchestrator.");
-			else this.#resolvePending(ref, null, "deny");
+			if (item.kind === "question") {
+				this.#resolvePending(ref, "aborted", { answer: "Task aborted by orchestrator." });
+			} else this.#resolvePending(ref, "aborted", { decision: "deny" });
 		}
 	}
 

@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { jobDir } from "../core/paths";
-import type { FeedEntry, Job, Notice, Pending } from "../core/types";
+import type { FeedEntry, Job, Notice, Pending, ResolvedItem } from "../core/types";
 import { isTerminal } from "../core/types";
 
 export const RESULT_CHAR_LIMIT = 12_000;
@@ -114,6 +114,45 @@ export function pendingSummary(p: Pending): string {
 	return `PENDING: ${p.jobId} ${what}${more} (ref ${p.ref})`;
 }
 
+/** How an approval was decided, as the `approve` flags that would give the same decision. */
+function decisionText(r: ResolvedItem): string {
+	if (r.kind === "question") return "answered";
+	if (r.by === "rule") return `${r.decision ?? "deny"} by rule ${r.rule ?? "?"}`;
+	if (r.rule) return `approve --rule '${r.rule}'`;
+	return r.decision === "session"
+		? "approve --session"
+		: r.decision === "deny"
+			? "approve --deny"
+			: "approve";
+}
+
+/** `RESOLVED:` line of `wait`: an item it reported that someone else settled since. */
+export function resolvedSummary(r: ResolvedItem): string {
+	return `RESOLVED: ${r.jobId} ${r.ref} by ${r.by} (${decisionText(r)})`;
+}
+
+const RESOLVER: Record<ResolvedItem["by"], string> = {
+	claude: "the orchestrator",
+	user: "the user",
+	rule: "a rule",
+	expired: "its timeout",
+	aborted: "the job's end",
+};
+
+/** Why `reply`/`approve` had nothing to do: the item was settled already. */
+export function alreadyResolvedText(r: ResolvedItem): string {
+	const at = new Date(r.resolvedAt);
+	const hhmm = Number.isNaN(at.getTime())
+		? r.resolvedAt
+		: `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+	const verb = r.kind === "question" ? "answered" : "decided";
+	const how =
+		r.kind === "question" && r.answerPreview !== null
+			? `answer: ${JSON.stringify(r.answerPreview.length > 60 ? `${r.answerPreview.slice(0, 59)}…` : r.answerPreview)}`
+			: decisionText(r);
+	return `already ${verb} by ${RESOLVER[r.by]} at ${hhmm} (${how}); nothing to do: re-arm your wait`;
+}
+
 const counts = (m: Record<string, number>) =>
 	Object.entries(m)
 		.sort(([a], [b]) => a.localeCompare(b))
@@ -140,11 +179,15 @@ export function emitJob(
 		notices?: Notice[];
 		maxResultLines?: number;
 		shellReads?: number | undefined;
+		/** wait: requests it showed earlier that someone else settled (JSON only). */
+		resolved?: ResolvedItem[];
 	} = {},
 ): void {
 	const data = jobJson(job, pending, opts.full, opts.shellReads);
 	if (asJson) {
-		out(JSON.stringify(data, null, 2));
+		out(
+			JSON.stringify(opts.resolved?.length ? { ...data, resolved: opts.resolved } : data, null, 2),
+		);
 		return;
 	}
 	out(`## omp job ${job.id} — ${job.status.toUpperCase()}`);

@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.4.0 (2026-10-31)
+
+- **omp jobs in Claude Code's UI** (requires Claude Code 2.1.316+). The plugin now ships a
+  hooks module (`hooks/register.tsx`): a band above the prompt with the session's jobs, cost and
+  open requests; an `/omp-jobs` pane with each job's status, latest activity, `[Review]`,
+  `[Cancel]` and `[Details]`; toasts when jobs end and notifications when one fails or needs
+  you. Only the current session's jobs are shown.
+- **Questions and approvals that are the user's.** Claude calls the new `mcp__omp__ask_user`
+  tool with the job and ref of a `PENDING:` line. A question with 2-4 options opens Claude
+  Code's question dialog, any other question and every approval a dialog pane (allow once, this
+  exact command, a rule, the tool for the session, deny, deny with a message). What reaches the
+  worker is one of its own options, verbatim, or what the user typed; an answer the dialog gave
+  while the user was away is never sent.
+- **Who decides**: `ui.decider` in the config (`claude` by default, `both`, `user`) and
+  `/omp-mode` for the current session. In `user` mode `wait` does not wake Claude for
+  questions and approvals while the session's UI is connected, and hands them over as soon as
+  it is not.
+- **First answer wins.** The daemon records who settled each request (`claude`, `user`, a
+  rule, expiry, the job's end). A `reply`/`approve` that comes second exits 2 with `already
+  decided|answered by the user at HH:MM (...)`, also after the job has ended; `wait` prints a
+  `RESOLVED:` line once for a request it showed that someone else settled.
+- `reply`/`approve` need `--ref` when the job has several open requests of that kind (exit 2
+  with the list).
+- New config block `ui` (`decider`, `notify`, `band`, `recent`), hidden CLI commands for the UI
+  (`ui-state`, `ui-feed`, `await-ref`, `ui-mode`) and a `--by user` that needs the UI stream's
+  token. The database moves to `omp-task/3` (upgraded in place).
+- `/omp-jobs` and `/omp-mode` run even while Claude's turn is busy (an `ask_user` waiting on
+  you). Closing the dialog pane returns `dismissed` to Claude within seconds. The UI shows jobs
+  by the random tail of their id (`9e09`), and approvals by their command without omp's
+  `Command:` label (the suggested rule too). Headless sessions (`claude -p`, the SDK) open no UI
+  stream, so the `user` mode never hides requests from a Claude that is alone.
+- `wait --json` lists the requests someone else settled in each job's object (`resolved`).
+
 ## 1.3.2 (2026-10-30)
 
 - A job's `events.jsonl` no longer grows with the square of a reply's length: by default

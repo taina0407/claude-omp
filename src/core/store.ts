@@ -4,14 +4,14 @@
  */
 import { Database } from "bun:sqlite";
 import { dbFile } from "./paths";
-import type { FeedEntry, Job, JobSpec, JobStatus, Notice, Pending } from "./types";
+import type { FeedEntry, Job, JobSpec, JobStatus, Notice, Pending, ResolvedItem } from "./types";
 import { nowIso } from "./util";
 
 /**
  * Bump when the layout changes. A database of an earlier version listed in UPGRADES is upgraded in
  * place; one with any other (or no) version is reset.
  */
-const SCHEMA_VERSION = "omp-task/2";
+const SCHEMA_VERSION = "omp-task/3";
 
 /** The number of an "omp-task/N" layout; 0 for anything else (an older build's layout). */
 function schemaNumber(version: string): number {
@@ -19,9 +19,27 @@ function schemaNumber(version: string): number {
 	return m ? Number(m[1]) : 0;
 }
 
+/** Settled questions and approvals: who answered, and whether `wait` must still report it. */
+const RESOLVED_TABLE = `CREATE TABLE resolved_pending (
+	job_id TEXT NOT NULL,
+	ref TEXT NOT NULL,
+	kind TEXT NOT NULL,
+	by TEXT NOT NULL,
+	decision TEXT,
+	rule TEXT,
+	answer_preview TEXT,
+	resolved_at TEXT NOT NULL,
+	report INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (job_id, ref)
+)`;
+
 /** Statements that bring a database of the key's version to the next one. */
 const UPGRADES: Record<string, { to: string; sql: string[] }> = {
 	"omp-task/1": { to: "omp-task/2", sql: ["ALTER TABLE jobs ADD COLUMN other_changes TEXT"] },
+	"omp-task/2": {
+		to: "omp-task/3",
+		sql: ["ALTER TABLE pending ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0", RESOLVED_TABLE],
+	},
 };
 
 const SCHEMA = `
@@ -90,8 +108,10 @@ const SCHEMA = `
 		options TEXT NOT NULL DEFAULT '[]',
 		context TEXT,
 		asked_at TEXT NOT NULL,
+		delivered INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (job_id, ref)
 	);
+	${RESOLVED_TABLE};
 	CREATE TABLE feed (
 		job_id TEXT NOT NULL,
 		seq INTEGER NOT NULL,
@@ -108,7 +128,7 @@ const SCHEMA = `
 	);`;
 
 /** Every table a database of this or an earlier layout may have; dropped on a reset. */
-const TABLES = ["jobs", "pending", "feed", "groups", "commands"];
+const TABLES = ["jobs", "pending", "resolved_pending", "feed", "groups", "commands"];
 
 type Row = Record<string, unknown>;
 
@@ -331,7 +351,7 @@ export class Store {
 	/** Removes a job with its feed and pending items (its directory is the caller's). */
 	deleteJob(id: string): void {
 		this.db.transaction(() => {
-			for (const table of ["feed", "pending"]) {
+			for (const table of ["feed", "pending", "resolved_pending"]) {
 				this.db.query(`DELETE FROM ${table} WHERE job_id = ?`).run(id);
 			}
 			this.db.query("DELETE FROM jobs WHERE id = ?").run(id);
@@ -428,9 +448,85 @@ export class Store {
 	listPending(jobId: string): Pending[] {
 		return (
 			this.db
-				.query("SELECT * FROM pending WHERE job_id = ? ORDER BY asked_at, rowid")
+				.query(
+					`SELECT job_id, ref, kind, text, tool, options, context, asked_at FROM pending
+					WHERE job_id = ? ORDER BY asked_at, rowid`,
+				)
 				.all(jobId) as Row[]
 		).map((r) => fromRow<Pending>(r));
+	}
+
+	/** Notes that the orchestrator's `wait` reported these items (see `resolvePending`). */
+	markDelivered(jobId: string, refs: string[]): void {
+		const q = this.db.query("UPDATE pending SET delivered = 1 WHERE job_id = ? AND ref = ?");
+		for (const ref of refs) q.run(jobId, ref);
+	}
+
+	/**
+	 * Removes a pending item and records how it was settled. When `wait` had reported it and
+	 * someone other than the orchestrator settled it, the next `wait` reports that once.
+	 */
+	resolvePending(r: ResolvedItem, quiet = false): void {
+		this.db.transaction(() => {
+			const row = this.db
+				.query("SELECT delivered FROM pending WHERE job_id = ? AND ref = ?")
+				.get(r.jobId, r.ref) as { delivered: number } | null;
+			this.db.query("DELETE FROM pending WHERE job_id = ? AND ref = ?").run(r.jobId, r.ref);
+			const report =
+				!quiet && row?.delivered === 1 && r.by !== "claude" && r.by !== "aborted" ? 1 : 0;
+			this.db
+				.query(
+					`INSERT OR REPLACE INTO resolved_pending
+					(job_id, ref, kind, by, decision, rule, answer_preview, resolved_at, report)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					r.jobId,
+					r.ref,
+					r.kind,
+					r.by,
+					r.decision,
+					r.rule,
+					r.answerPreview,
+					r.resolvedAt,
+					report,
+				);
+		})();
+		this.onChange(r.jobId);
+	}
+
+	getResolved(jobId: string, ref: string): ResolvedItem | null {
+		const row = this.db
+			.query(
+				`SELECT job_id, ref, kind, by, decision, rule, answer_preview, resolved_at
+				FROM resolved_pending WHERE job_id = ? AND ref = ?`,
+			)
+			.get(jobId, ref) as Row | null;
+		return row ? fromRow<ResolvedItem>(row) : null;
+	}
+
+	/** Removes and returns the settled items of a job that `wait` still has to report. */
+	takeResolvedReports(jobId: string): ResolvedItem[] {
+		return this.db.transaction(() => {
+			const rows = this.db
+				.query(
+					`SELECT job_id, ref, kind, by, decision, rule, answer_preview, resolved_at
+					FROM resolved_pending WHERE job_id = ? AND report = 1 ORDER BY resolved_at, rowid`,
+				)
+				.all(jobId) as Row[];
+			if (rows.length) {
+				this.db.query("UPDATE resolved_pending SET report = 0 WHERE job_id = ?").run(jobId);
+			}
+			return rows.map((r) => fromRow<ResolvedItem>(r));
+		})();
+	}
+
+	/** The latest feed line of a job. */
+	lastFeed(jobId: string): FeedEntry | null {
+		const row = this.db
+			.query("SELECT * FROM feed WHERE job_id = ? ORDER BY seq DESC LIMIT 1")
+			.get(jobId) as Row | null;
+		return row ? fromRow<FeedEntry>(row) : null;
 	}
 
 	// ---------------------------------------------------------------- feed

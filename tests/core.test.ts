@@ -182,6 +182,8 @@ describe("Store", () => {
 		withStore((s, path) => {
 			s.createJob("20260101-000000-abcd", spec);
 			s.db.run("ALTER TABLE jobs DROP COLUMN other_changes");
+			s.db.run("ALTER TABLE pending DROP COLUMN delivered");
+			s.db.run("DROP TABLE resolved_pending");
 			s.db.run("UPDATE meta SET value = 'omp-task/1' WHERE key = 'schema'");
 			const again = new Store(path);
 			try {
@@ -194,12 +196,46 @@ describe("Store", () => {
 		});
 	});
 
+	test("a database of layout omp-task/2 gains the settled-items record, keeping its pending items", () => {
+		withStore((s, path) => {
+			s.createJob("20260101-000000-abcd", spec);
+			s.db.run("ALTER TABLE pending DROP COLUMN delivered");
+			s.db.run("DROP TABLE resolved_pending");
+			s.db.run("UPDATE meta SET value = 'omp-task/2' WHERE key = 'schema'");
+			s.db.run(
+				`INSERT INTO pending (job_id, ref, kind, text, tool, options, context, asked_at)
+				VALUES ('20260101-000000-abcd', 'r1', 'approval', 'Command: ls', 'bash', '[]', NULL, 'x')`,
+			);
+			const again = new Store(path);
+			try {
+				expect(again.listPending("20260101-000000-abcd").map((p) => p.ref)).toEqual(["r1"]);
+				again.markDelivered("20260101-000000-abcd", ["r1"]);
+				again.resolvePending({
+					jobId: "20260101-000000-abcd",
+					ref: "r1",
+					kind: "approval",
+					by: "user",
+					decision: "deny",
+					rule: null,
+					answerPreview: null,
+					resolvedAt: "x",
+				});
+				expect(again.listPending("20260101-000000-abcd")).toEqual([]);
+				expect(again.takeResolvedReports("20260101-000000-abcd")).toHaveLength(1);
+				expect(again.takeResolvedReports("20260101-000000-abcd")).toHaveLength(0);
+				expect(again.getResolved("20260101-000000-abcd", "r1")?.by).toBe("user");
+			} finally {
+				again.close();
+			}
+		});
+	});
+
 	test("a database of a newer layout is refused, not reset", () => {
 		withStore((s, path) => {
 			s.createJob("20260101-000000-abcd", spec);
 			s.db.run("UPDATE meta SET value = 'omp-task/99' WHERE key = 'schema'");
 			expect(() => new Store(path)).toThrow("newer than this omp-task");
-			s.db.run("UPDATE meta SET value = 'omp-task/2' WHERE key = 'schema'");
+			s.db.run("UPDATE meta SET value = 'omp-task/3' WHERE key = 'schema'");
 			expect(s.getJob("20260101-000000-abcd")?.title).toBe("t");
 		});
 	});

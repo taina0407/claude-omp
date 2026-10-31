@@ -169,8 +169,30 @@ export interface ShellCall {
 export type ControlKind = "steer" | "abort" | "reply" | "approve";
 export type ApprovalDecision = "approve" | "session" | "deny";
 
+/** Who settled a question or approval: the orchestrator, the user (through the UI), an allow/deny
+ * rule, the answer/approval timeout, or the job's end (cancel, timeout, budget). */
+export type ResolvedBy = "claude" | "user" | "rule" | "expired" | "aborted";
+export type AnsweredBy = "claude" | "user";
+
+/** A question or approval that is no longer pending, and how it was settled. */
+export interface ResolvedItem {
+	jobId: string;
+	ref: string;
+	kind: PendingKind;
+	by: ResolvedBy;
+	/** Approvals: approve | session | deny; null for questions. */
+	decision: ApprovalDecision | null;
+	/** Approvals: the allow rule added with it (or the rule that decided it, for `rule`). */
+	rule: string | null;
+	/** Questions: the start of the answer sent. */
+	answerPreview: string | null;
+	resolvedAt: string;
+}
+
 export interface ControlRequest {
 	kind: ControlKind;
+	/** reply/approve: who answers (default claude); `user` needs the UI's token (checked by the daemon). */
+	by?: AnsweredBy | undefined;
 	message?: string | undefined;
 	ref?: string | null | undefined;
 	decision?: ApprovalDecision | undefined;
@@ -178,10 +200,21 @@ export interface ControlRequest {
 	rule?: string | undefined;
 	/** approve: also add a rule matching exactly this request's command. */
 	same?: boolean | undefined;
+	/**
+	 * reply/approve by the user: Claude already learns the outcome another way (the UI's ask_user
+	 * result), so the next `wait` does not report it as RESOLVED.
+	 */
+	quiet?: boolean | undefined;
 }
+
+/** Why a control request was refused, for callers that act on it (the CLI exits 2 on these). */
+export type ControlErrorCode = "already_resolved" | "ref_required" | "ui_token_required";
 
 export interface CommandResult {
 	ok: boolean;
 	error?: string;
 	ref?: string;
+	code?: ControlErrorCode;
+	/** With code already_resolved: how the item was settled. */
+	resolved?: ResolvedItem;
 }

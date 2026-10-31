@@ -1,6 +1,16 @@
 /** Request bodies of the daemon's HTTP API (validated) and the shapes it returns. */
 import { z } from "zod";
-import type { CommandResult, FeedEntry, Job, Notice, Pending } from "../core/types";
+import { DECIDERS, type Decider, type UiSettings } from "../core/config";
+import type {
+	CommandResult,
+	FeedEntry,
+	Job,
+	JobStatus,
+	Notice,
+	Pending,
+	ResolvedBy,
+	ResolvedItem,
+} from "../core/types";
 import { REVIEW_MODES } from "../review/schema";
 
 const optionalString = z.string().optional();
@@ -111,8 +121,18 @@ export const controlBody = z.object({
 	decision: z.enum(["approve", "session", "deny"]).optional(),
 	rule: optionalString,
 	same: z.boolean().optional(),
+	/** reply/approve: who answers; `user` is accepted only with the UI's token for the job's session. */
+	by: z.enum(["claude", "user"]).optional(),
+	quiet: z.boolean().optional(),
+	token: optionalString,
 });
 export type ControlBody = z.infer<typeof controlBody>;
+
+/** PUT /v1/sessions/<id>/ui: the session's own decider (null: back to the config's). */
+export const uiModeBody = z.object({
+	decider: z.enum(DECIDERS).nullable(),
+	token: z.string(),
+});
 
 export const shutdownBody = z.object({ force: z.boolean().optional() });
 
@@ -144,6 +164,11 @@ export interface WaitResponse {
 /** A job in a `wait` answer, with the notices this answer delivered (they are not sent again). */
 export interface WaitView extends JobView {
 	delivered: Notice[];
+	/**
+	 * Questions and approvals an earlier `wait` reported (PENDING:) that someone other than the
+	 * orchestrator settled since: the user, a rule, or the timeout. Each is reported once.
+	 */
+	resolved: ResolvedItem[];
 }
 
 export type ControlResponse = CommandResult;
@@ -170,3 +195,68 @@ export interface PruneResponse {
 export type FeedEvent =
 	| { type: "feed"; entry: FeedEntry }
 	| { type: "end"; jobs: { id: string; status: string }[] };
+
+/** What the Claude Code UI (the plugin's mod) shows of one job. */
+export interface UiJob {
+	id: string;
+	title: string | null;
+	status: JobStatus;
+	model: string | null;
+	access: string;
+	group: string | null;
+	startedAt: string | null;
+	finishedAt: string | null;
+	durationS: number | null;
+	costUsd: number;
+	budgetUsd: number | null;
+	queueReason: string | null;
+	worktreePath: string | null;
+	/** The job's latest feed line (text cut to 200 characters). */
+	lastActivity: { ts: string; kind: string; text: string } | null;
+	pending: UiPending[];
+	changedFiles: number | null;
+	/** The directory the worker runs in (its worktree for an isolated job). */
+	cwd: string;
+}
+
+/** A question or approval as the UI shows it. */
+export interface UiPending extends Pending {
+	/** An approval whose command omp shortened: no `--same` or `--rule` can vouch for it. */
+	shortened: boolean;
+	/** What an allow rule is matched against: the command without omp's `Command:` label. */
+	subject: string;
+}
+
+/** GET /v1/ui and each `snapshot` event of GET /v1/ui/stream. */
+export interface UiSnapshot {
+	daemon: "up";
+	version: string;
+	generatedAt: string;
+	/** Who decides the session's questions and approvals now: the session's choice, else the config's. */
+	decider: Decider;
+	/** Whether `decider` is the session's own choice (`ui-mode`) rather than the config's. */
+	deciderSource: "session" | "config";
+	/** The config's `ui` block, defaults filled in. */
+	ui: UiSettings;
+	/** The session's jobs that are active or interrupted, or ended within `recent`. */
+	jobs: UiJob[];
+}
+
+/** One server-sent event on GET /v1/ui/stream: the UI token first, then snapshots, then end. */
+export type UiStreamEvent =
+	| { type: "token"; token: string }
+	| { type: "snapshot"; snapshot: UiSnapshot }
+	| { type: "end" };
+
+/** GET /v1/jobs/<id>/pending/<ref>: whether a question or approval is still open. */
+export type PendingState =
+	| { state: "open" }
+	| {
+			state: "resolved";
+			by: ResolvedBy;
+			decision: string | null;
+			rule: string | null;
+			answerPreview: string | null;
+			at: string;
+	  }
+	| { state: "gone" };

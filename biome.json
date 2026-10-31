@@ -10,6 +10,9 @@
 			"src/**",
 			"scripts/**",
 			"tests/**/*.ts",
+			"hooks/**/*.ts",
+			"hooks/**/*.tsx",
+			"types/**/*.ts",
 			"package.json",
 			"tsconfig.json",
 			"biome.json"

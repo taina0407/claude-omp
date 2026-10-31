@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
-import type { FeedEvent, Health } from "../api/schema";
+import type { FeedEvent, Health, UiStreamEvent } from "../api/schema";
 import { detachedEnv } from "../core/env";
 import { cliCommand, socketPath, stateDir } from "../core/paths";
 import { UsageError } from "../core/util";
@@ -18,6 +18,9 @@ const START_TIMEOUT_MS = 10_000;
 
 export class Client {
 	constructor(readonly socket: string) {}
+
+	/** Thrown by `call` and the streams when the daemon has no such route (an older daemon). */
+	static readonly NO_ROUTE = "no route";
 
 	async #fetch(method: string, path: string, body?: unknown): Promise<Response> {
 		const init: RequestInit & { unix: string } = { method, unix: this.socket };
@@ -55,13 +58,24 @@ export class Client {
 	 * Streams GET /v1/feed (server-sent events) until the daemon sends `end`: once the jobs ended,
 	 * or right after the events so far when `follow` is false.
 	 */
-	async *feed(ids: string[], fromStart: boolean, follow = true): AsyncGenerator<FeedEvent> {
+	feed(ids: string[], fromStart: boolean, follow = true): AsyncGenerator<FeedEvent> {
 		const q = new URLSearchParams({
 			ids: ids.join(","),
 			from: fromStart ? "start" : "latest",
 			follow: follow ? "1" : "0",
 		});
-		const res = await this.#fetch("GET", `/v1/feed?${q}`);
+		return this.#events<FeedEvent>(`/v1/feed?${q}`);
+	}
+
+	/** Streams GET /v1/ui/stream for a Claude session: a token, snapshots, then end. */
+	uiStream(session: string, recentS: number): AsyncGenerator<UiStreamEvent> {
+		const q = new URLSearchParams({ session, recent: String(recentS) });
+		return this.#events<UiStreamEvent>(`/v1/ui/stream?${q}`);
+	}
+
+	/** The `data` of each server-sent event of a GET request, parsed as JSON. */
+	async *#events<T>(path: string): AsyncGenerator<T> {
+		const res = await this.#fetch("GET", path);
 		if (!res.ok || !res.body) {
 			const data = (await res.json().catch(() => ({}))) as { error?: string };
 			throw new UsageError(data.error ?? `HTTP ${res.status}`);
@@ -79,7 +93,7 @@ export class Client {
 					.filter((l) => l.startsWith("data: "))
 					.map((l) => l.slice(6))
 					.join("\n");
-				if (data) yield JSON.parse(data) as FeedEvent;
+				if (data) yield JSON.parse(data) as T;
 				end = buf.indexOf("\n\n");
 			}
 		}
