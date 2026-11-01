@@ -35,8 +35,10 @@ export const HOST_TOOLS = [
 		description:
 			"Send a one-line progress note to the orchestrating agent without waiting for a reply. " +
 			"Notes are logged; the orchestrator is not interrupted for them. Set checkpoint to true " +
-			"only when the task asks you to report a checkpoint, or when the orchestrator should " +
-			"look now (for example the plan changed in a way the brief did not foresee).",
+			"only when the task asks you to report a checkpoint, or when you are about to depart " +
+			"from the brief and the orchestrator may want to stop you. Progress, results and " +
+			"passing checks are plain notes (your final report carries them); a decision you need " +
+			"is a question (ask_orchestrator), not a checkpoint.",
 		parameters: {
 			type: "object",
 			properties: {

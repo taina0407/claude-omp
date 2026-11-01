@@ -59,6 +59,8 @@ export class Sandbox {
 			FAKE_OMP_LOG: join(this.base, "argv.log"),
 			FAKE_OMP_SESSIONS: join(this.base, "sessions.txt"),
 			XDG_RUNTIME_DIR: join(this.base, "run"),
+			// Checkpoints wake at once unless a test is about their grace.
+			OMP_TASK_CHECKPOINT_GRACE: "0",
 		};
 	}
 

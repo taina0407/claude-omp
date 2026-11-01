@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.1 (2026-11-02)
+
+- **Read-only shell commands no longer wake Claude when omp asks before it starts the call.**
+  omp 18.14 sends a bash approval and the call's start in either order; when the approval came
+  first, the daemon did not know the call's working directory and asked Claude even for
+  `cat`, `ls` or `grep`. A bash approval now waits up to a second for its call's start.
+- **A checkpoint wakes `wait` once, not twice.** `wait` holds a checkpoint for up to a minute,
+  so a question, a stall or an interruption that follows wakes Claude once with both, and a job
+  that ends meanwhile wakes it only for the end (the report has the rest). Each wake is a Claude
+  turn, and each turn a notification in Claude Code or Orca.
+- Workers are told to keep progress, results and passing checks to plain notes and to set
+  `checkpoint` only when the brief asks for one or before they depart from the brief.
+
 ## 1.4.0 (2026-10-31)
 
 - **omp jobs in Claude Code's UI** (requires Claude Code 2.1.316+). The plugin now ships a

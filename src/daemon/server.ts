@@ -60,6 +60,19 @@ const SSE_HEARTBEAT_MS = 15_000;
 const HOUSEKEEPING_MS = 24 * 3600_000;
 /** Notices `wait` returns for; `--no-checkpoint` leaves checkpoints in the feed only. */
 const NOTICE_KINDS = ["checkpoint", "stalled"] as const;
+/**
+ * A checkpoint asks nothing of the orchestrator and the worker carries on: `wait` holds it this
+ * long, so what tends to follow (a question, the job's end) wakes the orchestrator once, not twice.
+ */
+const CHECKPOINT_GRACE_MS = 60_000;
+
+/** The checkpoint grace; OMP_TASK_CHECKPOINT_GRACE (seconds) overrides it, for tests. */
+function checkpointGraceMs(): number {
+	const env = Number(process.env.OMP_TASK_CHECKPOINT_GRACE);
+	return process.env.OMP_TASK_CHECKPOINT_GRACE && Number.isFinite(env)
+		? env * 1000
+		: CHECKPOINT_GRACE_MS;
+}
 /** Longest a single pending-item request (`omp-task await-ref`) is held open. */
 const MAX_PENDING_WAIT_S = 600;
 /** Changes within this long go out as one UI snapshot. */
@@ -724,6 +737,7 @@ export class Daemon {
 			const ids = members.map((j) => j.id);
 			jobIds.push(...ids.filter((id) => !jobIds.includes(id)).reverse());
 		}
+		const grace = checkpointGraceMs();
 		this.#clients++;
 		try {
 			while (true) {
@@ -734,9 +748,20 @@ export class Daemon {
 				});
 				const noticed = (v: JobView) =>
 					!isTerminal(v.job.status) && v.job.notices.some((n) => kinds.includes(n.kind));
-				const needs = views.some(
-					(v) => v.pending.length > 0 || v.job.status === "interrupted" || noticed(v),
+				const urgent = views.some(
+					(v) =>
+						v.pending.length > 0 ||
+						v.job.status === "interrupted" ||
+						(!isTerminal(v.job.status) &&
+							v.job.notices.some((n) => n.kind !== "checkpoint" && kinds.includes(n.kind))),
 				);
+				// Only checkpoints: they wake once the oldest is `grace` old.
+				const checkpointsDue = views
+					.filter(noticed)
+					.flatMap((v) => v.job.notices.filter((n) => n.kind === "checkpoint"))
+					.map((n) => Date.parse(n.at) + grace)
+					.reduce((a, b) => Math.min(a, b), Number.POSITIVE_INFINITY);
+				const needs = urgent || checkpointsDue <= Date.now();
 				let reason: WaitResponse["reason"] | null = null;
 				if (attention && needs) reason = "attention";
 				else if (views.every((v) => isTerminal(v.job.status))) reason = "done";
@@ -760,7 +785,8 @@ export class Daemon {
 					const res: WaitResponse = { reason, jobs };
 					return json(res);
 				}
-				await this.#nextChange(deadline - performance.now());
+				const untilDue = attention ? checkpointsDue - Date.now() : Number.POSITIVE_INFINITY;
+				await this.#nextChange(Math.min(deadline - performance.now(), Math.max(untilDue, 0)));
 			}
 		} finally {
 			this.#clients--;

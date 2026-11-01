@@ -46,6 +46,11 @@ class OmpRpcSession implements BackendSession {
 			extraTools: spec.hostTools ?? [],
 			send: (f) => this.#send(f),
 			emit,
+			later: (ms, fn) => {
+				const t = setTimeout(fn, ms);
+				this.#timers.push(t);
+				return () => clearTimeout(t);
+			},
 		});
 
 		const bin = ompBin();

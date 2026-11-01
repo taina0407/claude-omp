@@ -273,6 +273,7 @@ async function runPrompt(prompt: Frame): Promise<void> {
 				result: { content: [{ type: "text", text: denied ? "Tool call denied by user" : "ok" }] },
 			});
 		} else if (word === "PAIR") {
+			// As omp 18.14 may: each request before its call's start.
 			for (const n of ["a", "b"]) {
 				emit({
 					type: "extension_ui_request",
@@ -280,6 +281,12 @@ async function runPrompt(prompt: Frame): Promise<void> {
 					method: "select",
 					title: `Allow tool: bash\nCommand: make ${n}`,
 					options: ["Approve", "Approve bash for this session", "Deny"],
+				});
+				emit({
+					type: "tool_execution_start",
+					toolName: "bash",
+					toolCallId: `pair-${n}`,
+					args: { command: `make ${n}` },
 				});
 			}
 			for (const n of ["a", "b"]) {
@@ -291,9 +298,12 @@ async function runPrompt(prompt: Frame): Promise<void> {
 			}
 		} else if (word === "SH") {
 			const calls = JSON.parse(Buffer.from(next, "base64url").toString()) as Frame[];
-			for (const [n, args] of calls.entries()) {
+			for (const [n, { late, ...args }] of calls.entries()) {
 				const id = `sh${n}`;
-				emit({ type: "tool_execution_start", toolName: "bash", toolCallId: id, args });
+				const start = () =>
+					emit({ type: "tool_execution_start", toolName: "bash", toolCallId: id, args });
+				// `late`: the request comes before the call's start, as omp 18.14 sometimes sends them.
+				if (!late) start();
 				emit({
 					type: "extension_ui_request",
 					id: `ap-${id}`,
@@ -301,6 +311,7 @@ async function runPrompt(prompt: Frame): Promise<void> {
 					title: `Allow tool: bash\nCommand: ${String(args.command)}`,
 					options: ["Approve", "Approve bash for this session", "Deny"],
 				});
+				if (late) start();
 				const res = await waitFor(
 					(f) => f.type === "extension_ui_response" && f.id === `ap-${id}`,
 					60_000,

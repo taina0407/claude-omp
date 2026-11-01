@@ -81,8 +81,10 @@ when it needs this conversation's nuance, touches files you are editing, or is a
      do nothing but re-arm the `wait`. A `RESOLVED:` line above `WAKE:` reports the same for an
      item an earlier `wait` showed you;
    - checkpoint → look at what it reports; `omp-task steer <id> "..."` only if it drifts. A
-     checkpoint counts as seen only when a `wait` reports it: one you already read in `watch`
-     still wakes the next `wait` once;
+     checkpoint wakes `wait` up to a minute after the worker sent it (at once with anything else
+     that needs you; not at all when the job ends first: the report has it). It counts as seen
+     only when a `wait` reports it: one you already read in `watch` still wakes the next `wait`
+     once. When nothing needs doing, re-arm the `wait` without a progress summary to the user;
    - stalled → `omp-task watch <id> --verbose --last 40` (the latest events, then it exits; a
      plain `watch` follows a running job until it ends), then steer or `omp-task cancel <id>`;
    - interrupted (the daemon restarted) → `omp-task resume <id> --detach` (without `--detach`

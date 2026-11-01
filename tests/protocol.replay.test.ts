@@ -125,6 +125,68 @@ describe("approvals", () => {
 		expect(shells).toEqual([{ cwd: "/tmp", env: true }, { cwd: null, env: false }, null]);
 	});
 
+	test("a bash approval that comes before its call's start waits for it (up to a second)", () => {
+		const events: BackendEvent[] = [];
+		const timers: { ms: number; fn: () => void; cancelled: boolean }[] = [];
+		const protocol = new OmpRpcProtocol({
+			prompt: "p",
+			send: () => {},
+			emit: (e) => events.push(e),
+			later: (ms, fn) => {
+				const t = { ms, fn, cancelled: false };
+				timers.push(t);
+				return () => {
+					t.cancelled = true;
+				};
+			},
+		});
+		const ask = (id: string, command: string) =>
+			protocol.onFrame({
+				type: "extension_ui_request",
+				id,
+				method: "select",
+				title: `Allow tool: bash\nCommand: ${command}`,
+				options: ["Approve", "Deny"],
+			});
+		const start = (id: string, args: Frame) =>
+			protocol.onFrame({ type: "tool_execution_start", toolName: "bash", toolCallId: id, args });
+		const approvals = () => events.filter((e) => e.kind === "approval");
+
+		// Recorded on omp 18.14: the request, then the start of the same call.
+		ask("ap-1", "cat a.ts");
+		expect(approvals()).toHaveLength(0);
+		start("c1", { command: "cat a.ts", cwd: "sub" });
+		expect(approvals()).toEqual([
+			{
+				kind: "approval",
+				ref: "ap-1",
+				tool: "bash",
+				detail: "Command: cat a.ts",
+				options: ["Approve", "Deny"],
+				shell: { cwd: "sub", env: false },
+			},
+		]);
+		expect(timers[0]).toMatchObject({ ms: 1000, cancelled: true });
+
+		// No start ever comes: it goes out without the call's details when the wait ends.
+		ask("ap-2", "ls");
+		expect(approvals()).toHaveLength(1);
+		timers[1]?.fn();
+		expect(approvals()[1]).toMatchObject({ ref: "ap-2" });
+		expect(approvals()[1]).not.toHaveProperty("shell");
+
+		// A command omp shortened can never match a call: no wait.
+		ask("ap-3", "cat x […120ch elided…]");
+		expect(approvals()[2]).toMatchObject({ ref: "ap-3" });
+		expect(timers).toHaveLength(2);
+
+		// Held when the job ends: dropped, never emitted.
+		ask("ap-4", "wc -l a.ts");
+		protocol.onExit(1, "gone");
+		expect(timers[2]?.cancelled).toBe(true);
+		expect(approvals()).toHaveLength(3);
+	});
+
 	test("decide() picks the matching option label", () => {
 		const { protocol, of, sent } = replay("v2-approval");
 		const refs = of("approval").map((a) => a.ref);

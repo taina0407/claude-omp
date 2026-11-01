@@ -214,6 +214,13 @@ describe("live supervision", () => {
 		expect(text).toContain("shell reads auto-approved: 2");
 	});
 
+	test("a read whose approval comes before the call's start runs without asking", async () => {
+		const out = await runJson([sh([{ command: "ls src", late: true }, { command: "cat a.txt" }])]);
+		expect(out.status).toBe("completed");
+		expect(out.result).toContain("sh0=Approve sh1=Approve");
+		expect(out.shell_reads_auto_approved).toBe(2);
+	});
+
 	test("a read with environment variables, or with --no-read-only, still asks", async () => {
 		for (const args of [
 			[sh([{ command: "ls", env: { BASH_ENV: "x.sh" } }])],

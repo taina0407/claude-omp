@@ -7,6 +7,7 @@
  * Observed protocol (omp 18.12): `ready` → negotiate v2 → commands → `prompt` → agent events →
  * `agent_end` → `prompt_result{status}` → `session_settled`.
  */
+import { isShortened } from "../../core/policy";
 import type { ApprovalDecision, ShellCall } from "../../core/types";
 import type { BackendEvent, HostTool } from "../types";
 import { type Frame, isRecord } from "./framing";
@@ -45,7 +46,16 @@ export interface ProtocolOptions {
 	emit: (event: BackendEvent) => void;
 	/** Host tools offered on top of ask/notify (e.g. submit_review). */
 	extraTools?: HostTool[];
+	/**
+	 * Runs `fn` after `ms`; returns a cancel. With it, a bash approval that arrives before its call's
+	 * `tool_execution_start` waits up to SHELL_WAIT_MS for it (omp sends the two in either order),
+	 * so the approval carries the call's cwd and env. Without it, such an approval goes out at once.
+	 */
+	later?: (ms: number, fn: () => void) => () => void;
 }
+
+/** How long a bash approval waits for its call's start frame before it goes out without it. */
+export const SHELL_WAIT_MS = 1_000;
 
 function str(v: unknown): string {
 	return typeof v === "string" ? v : "";
@@ -82,13 +92,24 @@ interface StartedShellCall extends ShellCall {
 	command: string;
 }
 
+/** A bash approval waiting for its call's start frame. */
+interface HeldApproval {
+	ref: string;
+	detail: string;
+	command: string;
+	options: string[];
+	cancel: () => void;
+}
+
 export class OmpRpcProtocol {
 	phase: Phase = "connecting";
 	sessionId: string | null = null;
 	readonly #opts: ProtocolOptions;
 	readonly #approvals = new Map<string, ApprovalRequest>();
-	/** bash calls that started and have not ended, by tool call id (omp asks after the start). */
+	/** bash calls that started and have not ended, by tool call id (omp usually asks after it). */
 	readonly #shellCalls = new Map<string, StartedShellCall>();
+	/** bash approvals that came before their call's start frame, in arrival order. */
+	readonly #held: HeldApproval[] = [];
 	#nextId = 0;
 	#promptId: string | null = null;
 	readonly #extraNames: ReadonlySet<string>;
@@ -107,7 +128,33 @@ export class OmpRpcProtocol {
 	#end(outcome: "completed" | "aborted" | "failed", error: string | null = null): void {
 		if (this.phase === "ended") return;
 		this.phase = "ended";
+		this.#dropHeld();
 		this.#opts.emit({ kind: "end", outcome, error, exitCode: null });
+	}
+
+	#dropHeld(): void {
+		for (const h of this.#held.splice(0)) h.cancel();
+	}
+
+	#emitApproval(ref: string, tool: string, detail: string, options: string[], shell?: ShellCall) {
+		this.#opts.emit({
+			kind: "approval",
+			ref,
+			tool,
+			detail: detail || tool,
+			options,
+			...(shell ? { shell } : {}),
+		});
+	}
+
+	/** A held approval whose command just started goes out with that call's cwd and env. */
+	#releaseHeld(command: string): void {
+		const i = this.#held.findIndex((h) => h.command === command);
+		if (i < 0) return;
+		const [h] = this.#held.splice(i, 1);
+		if (!h) return;
+		h.cancel();
+		this.#emitApproval(h.ref, "bash", h.detail, h.options, this.#claimShellCall(h.detail));
 	}
 
 	// ---------------------------------------------------------------- omp → host
@@ -241,14 +288,26 @@ export class OmpRpcProtocol {
 			const newline = title.indexOf("\n");
 			const detail = newline >= 0 ? title.slice(newline + 1).trim() : tool;
 			const shell = tool === "bash" ? this.#claimShellCall(detail) : undefined;
-			this.#opts.emit({
-				kind: "approval",
-				ref: id,
-				tool,
-				detail: detail || tool,
-				options,
-				...(shell ? { shell } : {}),
-			});
+			const later = this.#opts.later;
+			if (tool === "bash" && !shell && later && !isShortened(detail)) {
+				// omp asked before it announced the call: wait a moment for the start frame.
+				const held: HeldApproval = {
+					ref: id,
+					detail,
+					command: detail.replace(/^Command: /, ""),
+					options,
+					cancel: () => {},
+				};
+				held.cancel = later(SHELL_WAIT_MS, () => {
+					const i = this.#held.indexOf(held);
+					if (i < 0) return;
+					this.#held.splice(i, 1);
+					if (this.phase !== "ended") this.#emitApproval(id, tool, detail, options);
+				});
+				this.#held.push(held);
+				return;
+			}
+			this.#emitApproval(id, tool, detail, options, shell);
 			return;
 		}
 		// Any other interactive prompt: nobody is there to answer it.
@@ -279,6 +338,7 @@ export class OmpRpcProtocol {
 				env: isRecord(args.env) && Object.keys(args.env).length > 0,
 			});
 		}
+		if (name === "bash" && this.#held.length) this.#releaseHeld(str(args.command));
 		const paths = editedPaths(name, args);
 		this.#opts.emit({
 			kind: "tool_start",
@@ -362,6 +422,7 @@ export class OmpRpcProtocol {
 	onExit(exitCode: number | null, stderrTail: string): void {
 		if (this.phase === "ended") return;
 		this.phase = "ended";
+		this.#dropHeld();
 		const error = stderrTail || `omp exited unexpectedly (code ${exitCode ?? "?"})`;
 		this.#opts.emit({ kind: "end", outcome: "failed", error, exitCode });
 	}

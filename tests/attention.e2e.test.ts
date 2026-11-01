@@ -89,6 +89,32 @@ describe("checkpoints", () => {
 		await sb.cli(["cancel", job]);
 	});
 
+	test("a checkpoint wakes wait only after its grace", async () => {
+		const job = await sb.start(["CHECKPOINT SLEEP"], { OMP_TASK_CHECKPOINT_GRACE: "3" });
+		await sb.waitForStatus(job, "running");
+		await sb.cli(["wait", job, "--max-wait", "1"], [3]);
+		const woke = await sb.cli(["wait", job], [0]);
+		expect(woke.stdout).toContain(`WAKE: ${job} checkpoint`);
+		await sb.cli(["cancel", job]);
+	});
+
+	test("a question after a checkpoint wakes wait once, with both", async () => {
+		const job = await sb.start(["CHECKPOINT ASK"], { OMP_TASK_CHECKPOINT_GRACE: "30" });
+		const started = performance.now();
+		const woke = await sb.cli(["wait", job], [0]);
+		expect(performance.now() - started).toBeLessThan(20_000);
+		expect(woke.stdout).toContain("CHECKPOINT: design done");
+		expect(woke.stdout).toContain(`WAKE: ${job} question`);
+		await sb.cli(["cancel", job]);
+	});
+
+	test("a job that ends within the grace wakes wait once, for the end", async () => {
+		const job = await sb.start(["CHECKPOINT"], { OMP_TASK_CHECKPOINT_GRACE: "30" });
+		const woke = await sb.cli(["wait", job], [0]);
+		expect(woke.stdout).toContain("WAKE: done (1 completed)");
+		expect(woke.stdout).not.toContain(`WAKE: ${job} checkpoint`);
+	});
+
 	test("a plain progress note never wakes wait", async () => {
 		const job = await sb.start(["NOTIFY SLEEP"]);
 		await sb.waitForStatus(job, "running");
