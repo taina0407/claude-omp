@@ -7,7 +7,7 @@ by that task's report when the dependent task starts.
 
 ```yaml
 group: auth-refactor        # default: the file name
-max_concurrent: 2           # this group's limit (global default 4)
+max_concurrent: 2           # this group's limit (per session: 4 by default)
 budget_usd: 2.00            # once spent: no new jobs start, running ones stop
 defaults: { model: smol, access: edit, isolate: worktree, allow: ["bun test*"] }
 tasks:

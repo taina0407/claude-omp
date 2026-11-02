@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.2 (2026-11-02)
+
+- **Concurrency is limited per Claude session, not across all of them.** The new
+  `max_concurrent_per_session` (default 4) caps the jobs one Claude Code session runs at once;
+  jobs started outside Claude Code share one allowance. The global `max_concurrent` no longer
+  defaults to 4: it applies only when set. A queued job's `queued:` line names the limit.
+
 ## 1.4.1 (2026-11-02)
 
 - **Read-only shell commands no longer wake Claude when omp asks before it starts the call.**

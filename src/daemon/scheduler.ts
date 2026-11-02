@@ -1,6 +1,6 @@
 /**
  * Decides which waiting jobs move on: a `blocked` job is released (or skipped) once its
- * dependencies end, and a `queued` job starts when the global, group and per-checkout limits
+ * dependencies end, and a `queued` job starts when the session, global, group and per-checkout limits
  * leave room, unless its group or the day has already spent its budget. An interrupted job keeps
  * its slot until it is resumed or cancelled, so a daemon restart does not hand it to a queued job.
  */
@@ -11,7 +11,8 @@ import type { Job, JobStatus } from "../core/types";
 import { isTerminal } from "../core/types";
 import { isoAt } from "../core/util";
 
-const DEFAULT_MAX_CONCURRENT = 4;
+/** Jobs of one Claude session running at once; the global `max_concurrent` has no default. */
+const DEFAULT_MAX_PER_SESSION = 4;
 const DEFAULT_MAX_WRITERS_PER_REPO = 1;
 
 export type Decision =
@@ -94,7 +95,8 @@ export function schedule(store: Store, config: Config, running: Job[]): Decision
 		.listJobs({ limit: 10_000, status: "interrupted" })
 		.filter((j) => !ids.has(j.id));
 	const active = [...running, ...interrupted];
-	const maxConcurrent = config.max_concurrent ?? DEFAULT_MAX_CONCURRENT;
+	const maxConcurrent = config.max_concurrent ?? null;
+	const maxPerSession = config.max_concurrent_per_session ?? DEFAULT_MAX_PER_SESSION;
 	const maxWriters = config.max_writers_per_repo ?? DEFAULT_MAX_WRITERS_PER_REPO;
 
 	// Ids sort by creation and dependencies exist before their dependents, so one pass in id
@@ -129,8 +131,17 @@ export function schedule(store: Store, config: Config, running: Job[]): Decision
 			continue;
 		}
 		const hold = (reason: string) => decisions.push({ action: "hold", job, reason });
-		if (active.length >= maxConcurrent) {
+		if (maxConcurrent !== null && active.length >= maxConcurrent) {
 			hold(`${active.length} jobs are running, the most at once (max_concurrent)`);
+			continue;
+		}
+		// Jobs started outside Claude Code (no session) share one allowance.
+		const mine = active.filter((j) => (j.claudeSession ?? null) === (job.claudeSession ?? null));
+		if (mine.length >= maxPerSession) {
+			hold(
+				`${mine.length} jobs of this ${job.claudeSession ? "Claude session" : "shell (no Claude session)"} ` +
+					"are running, the most at once (max_concurrent_per_session)",
+			);
 			continue;
 		}
 		if (job.groupName) {

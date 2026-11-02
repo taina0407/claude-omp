@@ -87,6 +87,6 @@ working in the same worktree until it is applied (without `--keep`) or discarded
 
 `--budget USD` stops a job as `over_budget` once it spends more. Group budgets
 (`groups.<name>.budget_usd` or a plan's `budget_usd`) and `daily_budget_usd` keep new jobs from
-starting and stop running ones. `max_concurrent` (default 4) and `max_writers_per_repo`
+starting and stop running ones. `max_concurrent_per_session` (default 4), `max_concurrent` (global, unset by default) and `max_writers_per_repo`
 (default 1) queue jobs; queued jobs start by themselves. An interrupted job keeps its slot until
 it is resumed or cancelled.

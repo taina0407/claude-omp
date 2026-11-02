@@ -419,7 +419,9 @@ biệt thay vì thay thế nó theo chuỗi ưu tiên trên.
 
 ### Thực thi đồng thời, chi tiêu và vòng đời
 
-`max_concurrent` mặc định là 4. `max_writers_per_repo` mặc định là 1 cho các job chỉnh sửa
+`max_concurrent_per_session` (số job một phiên Claude Code chạy cùng lúc; các job khởi chạy
+ngoài Claude Code dùng chung một hạn mức) mặc định là 4; `max_concurrent` toàn cục không giới hạn
+nếu không đặt. `max_writers_per_repo` mặc định là 1 cho các job chỉnh sửa
 trực tiếp cùng một bản checkout; các job ghi trong worktree tách biệt không dùng chung
 suất ghi đó. Job bị gián đoạn (`interrupted`) vẫn giữ suất của nó cho đến khi được `resume`
 hoặc `cancel`, nên khởi động lại daemon không để job đang xếp hàng chạy thế chỗ. Nhóm hỗ trợ `max_concurrent` và `budget_usd`; `budget`/`--budget` cho từng job

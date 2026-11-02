@@ -53,8 +53,13 @@ const configSchema = z.looseObject({
 	event_log: z.enum(["compact", "full", "off"]).optional(),
 	/** Finished jobs (and their files) are deleted after this long (default 30d; 0 keeps them). */
 	job_retention: duration.optional(),
-	/** Jobs running at once across everything (default 4). */
+	/** Jobs running at once across every session (no limit unless set). */
 	max_concurrent: z.number().int().positive().optional(),
+	/**
+	 * Jobs one Claude Code session runs at once (default 4); jobs started outside Claude Code
+	 * share one allowance.
+	 */
+	max_concurrent_per_session: z.number().int().positive().optional(),
 	/** Jobs that may edit one checkout at once when they are not isolated (default 1). */
 	max_writers_per_repo: z.number().int().positive().optional(),
 	/** Spending limit for all jobs created on one (local) day. */

@@ -396,7 +396,9 @@ than replacing it through that precedence chain.
 
 ### Concurrency, spending, and lifecycle
 
-`max_concurrent` defaults to 4. `max_writers_per_repo` defaults to 1 for jobs editing the same
+`max_concurrent_per_session` (jobs one Claude Code session runs at once; jobs started outside
+Claude Code share one allowance) defaults to 4; the global `max_concurrent` has no limit unless
+set. `max_writers_per_repo` defaults to 1 for jobs editing the same
 checkout directly; isolated writers do not share that writer slot. An interrupted job keeps
 its slot until you `resume` or `cancel` it, so a daemon restart does not let a queued job start
 in its place. Groups support

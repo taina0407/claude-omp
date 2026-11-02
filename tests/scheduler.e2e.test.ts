@@ -37,6 +37,32 @@ describe("concurrency", () => {
 		expect((sb.job(b)?.startedAt as string) >= (sb.job(a)?.finishedAt as string)).toBe(true);
 	});
 
+	test("max_concurrent_per_session limits each Claude session on its own", async () => {
+		sb.writeConfig({ max_concurrent_per_session: 1 });
+		const s1 = { OMP_TASK_CLAUDE_SESSION: "s-one" };
+		const s2 = { OMP_TASK_CLAUDE_SESSION: "s-two" };
+		const a = await sb.start(["--access", "read", "SLEEP"], s1);
+		await sb.waitForStatus(a, "running");
+		const b = await sb.start(["--access", "read", "hello"], s1);
+		const c = await sb.start(["--access", "read", "hello"], s2);
+		expect((await sb.waitJson(c)).status).toBe("completed");
+		expect(sb.jobStatus(b)).toBe("queued");
+		const { stdout } = await sb.cli(["status", b]);
+		expect(stdout).toContain("max_concurrent_per_session");
+		await sb.cli(["steer", a, "done"]);
+		expect((await sb.waitJson(b)).status).toBe("completed");
+	});
+
+	test("without max_concurrent, sessions together run more than four jobs", async () => {
+		const jobs: string[] = [];
+		for (const n of [1, 2, 3]) {
+			const env = { OMP_TASK_CLAUDE_SESSION: `s-${n}` };
+			for (let i = 0; i < 2; i++) jobs.push(await sb.start(["--access", "read", "SLEEP"], env));
+		}
+		for (const j of jobs) await sb.waitForStatus(j, "running");
+		for (const j of jobs) await sb.cli(["cancel", j]);
+	});
+
 	test("two writers of one checkout take turns; a reader does not wait", async () => {
 		const a = await sb.start(["SLEEP"]);
 		await sb.waitForStatus(a, "running");
