@@ -26,8 +26,9 @@ tasks:
     after_any: true          # run even if api did not complete
 ```
 
-Check the graph first with `omp-task plan apply plan.yaml --dry-run`. Then apply it, run
-`omp-task wait --group auth-refactor` in the background and end your turn.
+Check the graph first with `omp-task plan apply plan.yaml --dry-run`. Then apply it, arm one
+wait for the whole group as its `next:` lines say (`omp-task wait --group auth-refactor`, through
+the `omp:job` agent or as a background Bash command) and end your turn.
 `omp-task summary auth-refactor` shows status, cost and changed files of every job. Review and
 `apply` each worktree job as usual, in dependency order. `after` only orders the runs: a
 dependent worktree task starts from `HEAD`, without the earlier tasks' unapplied changes, so

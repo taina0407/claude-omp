@@ -3,16 +3,25 @@
  * JSON from stdin. A hook must never get in Claude's way: any failure is logged to stderr and
  * the hook exits 0 without output.
  *
- *   session-start  remembers the session id for later omp-task calls (CLAUDE_ENV_FILE)
+ *   session-start  remembers the session id for later omp-task calls (CLAUDE_ENV_FILE) and
+ *                  points the subagentStatusLine shim at this plugin
  *   session-end    cancels the session's jobs when `on_session_end` is "cancel"
  *   stop-gate      opt-in: reviews uncommitted changes and blocks the stop on serious findings
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+	appendFileSync,
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import type { JobView, WaitResponse } from "../api/schema";
 import { connect, existingDaemon } from "../cli/client";
 import { type Config, loadConfig } from "../core/config";
-import { jobDir, stateDir } from "../core/paths";
+import { jobDir, stateDir, statuslineShim } from "../core/paths";
 import { isTerminal } from "../core/types";
 import { errorText, parseDuration } from "../core/util";
 import { renderReview } from "../review/render";
@@ -61,7 +70,36 @@ function sessionStart(input: HookInput): HookResult {
 	if (envFile && id && /^[\w-]+$/.test(id)) {
 		appendFileSync(envFile, `export OMP_TASK_CLAUDE_SESSION=${id}\n`);
 	}
+	try {
+		writeStatuslineShim(process.env.CLAUDE_PLUGIN_ROOT);
+	} catch (e) {
+		process.stderr.write(`omp-task hook session-start: status line shim: ${errorText(e)}\n`);
+	}
 	return {};
+}
+
+/** The shim's text: runs `omp-task statusline` of the plugin at `root`. */
+export function statuslineShimText(root: string): string {
+	const quoted = `'${join(root, "bin", "omp-task").replaceAll("'", "'\\''")}'`;
+	return [
+		"#!/bin/sh",
+		"# Written by the omp plugin's SessionStart hook; Claude Code's subagentStatusLine runs it.",
+		`exec ${quoted} statusline`,
+		"",
+	].join("\n");
+}
+
+/** Points the subagentStatusLine shim at the plugin at `root` (the latest session's wins). */
+export function writeStatuslineShim(root: string | undefined): void {
+	if (!root) return;
+	const file = statuslineShim();
+	const text = statuslineShimText(root);
+	if (existsSync(file) && readFileSync(file, "utf8") === text) return;
+	mkdirSync(dirname(file), { recursive: true });
+	const tmp = `${file}.${process.pid}.tmp`;
+	writeFileSync(tmp, text);
+	chmodSync(tmp, 0o755);
+	renameSync(tmp, file);
 }
 
 async function sessionEnd(input: HookInput): Promise<HookResult> {

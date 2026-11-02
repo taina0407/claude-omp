@@ -22,7 +22,8 @@
  *   REVIEW        submit_review with a valid review (one high finding)
  *   REVIEWBAD     submit an invalid review first, then a valid one
  *   REVIEWWORSE   keep submitting invalid reviews (three times)
- *   SLEEP         idle up to 30s; `steer` ends it early, `abort` ends the run as aborted
+ *   SLEEP         idle up to 30s ($FAKE_OMP_SLEEP_MS); `steer` ends it early, `abort` ends the run
+ *                 as aborted
  *   SLOWSTART     take 3s to accept the prompt (the session is not saved until then)
  *   ERROR         the final message has stopReason "error"
  *   FAIL          exit 1 with an error on stderr
@@ -345,7 +346,10 @@ async function runPrompt(prompt: Frame): Promise<void> {
 			});
 			emit({ type: "subagent_lifecycle", payload: { ...base, status: "completed" } });
 		} else if (word === "SLEEP") {
-			const f = await waitFor((x) => x.type === "steer" || x.type === "abort");
+			const f = await waitFor(
+				(x) => x.type === "steer" || x.type === "abort",
+				Number(process.env.FAKE_OMP_SLEEP_MS) || 30_000,
+			);
 			if (f?.type === "steer") {
 				respond(f);
 				notes.push(`steered=${String(f.message)}`);

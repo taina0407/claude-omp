@@ -1,0 +1,6 @@
+{
+  "subagentStatusLine": {
+    "type": "command",
+    "command": "f=\"${OMP_TASK_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-omp}/subagent-statusline\"; [ -x \"$f\" ] && exec \"$f\"; exit 0"
+  }
+}

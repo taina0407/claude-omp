@@ -19,19 +19,36 @@ does not check that a provider is logged in).
 
 ## The one rule about waiting
 
-Every time the worker needs you, you pay for a full turn. So:
+Every time the worker needs you, you pay for a full turn. So start jobs with `--detach`, arm
+**one wait** per job (or per group), and **end your turn**. The wait returns only when every job
+it covers ended or one needs you: a question, an approval, a checkpoint, a stalled worker, or an
+interrupted job. How you arm it is the `supervise` setting (`/omp:mode`); never guess it: the
+`next:` lines of `run`/`continue`/`review`/`resume --detach` and `plan apply` spell it out.
 
-- Start jobs with `--detach`, then run `omp-task wait <id...>` (or `omp-task wait --group G`) as
-  a **background** Bash command and **end your turn**. It returns only when every job ended or
-  one needs you: a question, an approval, a checkpoint, a stalled worker, or an interrupted job.
-- Read the **last lines**, not the exit code: `WAKE: <id> <reason>` (with one `PENDING: <id> …`
-  line per open question or approval just above it) or `WAKE: done (2 completed)`. `wait` exits
-  0 both when every job completed and when one needs you; 1 means a job failed, was cancelled,
-  timed out, was skipped or went over budget.
+- **`supervise: subagent`** (the default): start the plugin's relay agent with the Agent tool,
+  exactly as the `next:` lines say: `subagent_type "omp:job"`, `run_in_background: true`,
+  `description "omp <short id>: <title> [<model>]"` (or `omp group <name>: <what>`), `prompt
+  "omp-task wait <id>"` (or `omp-task wait --group <name>`). Keep that description format: Claude
+  Code and Orca show it as the job's row, and the plugin's status line fills the row with the
+  job's state, model, time, cost and what it waits on. The agent (haiku, about $0.001) loops on
+  `wait` and, when it returns, ends with the wait output **verbatim**; that result reaches you
+  as the agent's completion notification. It never answers or approves anything: you do.
+- **`supervise: bash`**, or when the Agent tool or background agents are unavailable (you are a
+  subagent yourself, the tool is denied, the host does not run background agents): run
+  `omp-task wait <id...>` (or `--group G`) as a **background** Bash command.
+- Either way, read the **last lines**, not the exit code: `WAKE: <id> <reason>` (with one
+  `PENDING: <id> …` line per open question or approval just above it) or `WAKE: done (2
+  completed)`. `wait` exits 0 both when every job completed and when one needs you; 1 means a
+  job failed, was cancelled, timed out, was skipped or went over budget. A relay result that
+  starts with `RELAY-ERROR:` means `wait` itself failed (exit 5: the daemon; exit 2: a bad id):
+  fix that, then arm the wait again.
 - Never poll, sleep-loop, or check "how it is going". Do not put `omp-task watch` on Monitor
   unless the user asks for a live view; piped, it prints only the same attention lines anyway.
-- After you answer or approve, re-arm the **same** background `wait` command (the same ids or
-  `--group`) in the same turn, so the other jobs keep waking you too.
+- After you answer or approve, **re-arm the same wait** in the same turn: a new `omp:job` agent
+  with the same description and prompt (the one that woke you has ended), or the same background
+  Bash command, so the other jobs keep waking you too. A job that ended needs no new wait.
+- One wait per job you started on its own, one per group (`-g`, `plan apply`): a group wait
+  wakes you once when all of its jobs are done instead of once per job.
 
 ## When delegating pays off
 
@@ -61,7 +78,7 @@ when it needs this conversation's nuance, touches files you are editing, or is a
    like to check their own work, and in `edit` access every command no rule decides wakes you,
    so list the commands, or write "none: verify with the read/search tools".
 4. **Start**: `omp-task run --detach --brief <file> -m <model> -a <access> [--isolate worktree]
-   [--allow ...] [--budget 0.50]`, then the background `wait`.
+   [--allow ...] [--budget 0.50]`, then arm the wait as its `next:` lines say.
 5. **When woken**, the job block above `WAKE:` shows what is needed and the exact command:
    - question → `omp-task reply <id> "<answer>"`. Decide it yourself when the brief, the code
      or the conversation settles it; one that is the user's call goes to them (see "Putting an
@@ -86,7 +103,7 @@ when it needs this conversation's nuance, touches files you are editing, or is a
      plain `watch` follows a running job until it ends), then steer or `omp-task cancel <id>`;
    - interrupted (the daemon restarted) → `omp-task resume <id> --detach` (without `--detach`
      it blocks until the job ends or needs you).
-   Then re-arm the same `wait` in the background. Unanswered items expire after 20m (questions continue
+   Then re-arm the same wait (agent or background Bash). Unanswered items expire after 20m (questions continue
    on an assumption, approvals are denied).
 6. **Review. Never skip it.** `wait` shows the first 40 lines of the report; `omp-task result
    <id> --full` has the rest. The report is a claim. Read the real changes: for a checkout job
@@ -99,7 +116,7 @@ when it needs this conversation's nuance, touches files you are editing, or is a
    fence changed, and run the "done when"
    command yourself, for a worktree job inside its worktree (the `- worktree:` path). For a
    second pair of eyes: `omp-task review --job <id> --detach` (a worktree job; `--staged` /
-   `--base REF` otherwise), then a background `wait` on the review's id.
+   `--base REF` otherwise), then arm a wait on the review's id.
 7. **Iterate** before you apply, in the same omp session: `omp-task continue <id> --detach
    "<specific feedback>"` creates a **new job id**, then `wait` on that new id. It keeps the
    worktree, cwd and the parent's settings (model, access, thinking, timeouts, budget, group,
@@ -148,8 +165,9 @@ waiting on the user:
 
 ## Several tasks
 
-Independent tasks: start each with `-g <group>` and wait once with `omp-task wait --group
-<group>`. Use a fresh group name for each fan-out (`auth-refactor-2`): `wait --group`, `summary`
+Independent tasks: start each with `-g <group>` and, once all are started, arm one wait for the
+group (`omp-task wait --group <group>`; the `next:` lines say how, with the description `omp
+group <group>: <what>`). Use a fresh group name for each fan-out (`auth-refactor-2`): `wait --group`, `summary`
 and group budgets cover every job ever created under that name. Group names are shared by
 every Claude session: `wait --group` only covers this session's jobs, and a `warning:` when you
 start a job means another session uses the name too; pick another. Dependent tasks: `--after <id>` (skipped if the dependency fails, unless

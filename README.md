@@ -31,6 +31,10 @@ You → Claude ── brief / answers / approvals ──→ omp-task
 
 - **Attention-driven supervision.** Background waits return when Claude needs to act or jobs
   finish. Approval rules handle known commands without another conversation turn.
+- **Every job in the agent panel.** Claude waits on each job through a small background agent
+  (`omp:job`, on haiku), so the job is a row in the agent panel of Claude Code and Orca. In
+  Claude Code the plugin's status line fills that row with the job's state, model, time, cost
+  and what it waits on. `/omp:mode bash` goes back to a plain background Bash wait.
 - **Access and isolation.** Choose read, edit, or full access; use a Git worktree to inspect,
   apply, or discard changes separately from your checkout.
 - **Parallel work.** Groups, dependencies, result passing, concurrency limits, and spending
@@ -182,10 +186,48 @@ Ask in plain words or invoke a namespaced command. `delegate` is a
 | `/omp:cancel JOB` | Cancel a job; unsuccessful dependencies cause dependent jobs to be skipped by default. |
 | `/omp:transfer` | Print the command for continuing this transcript in interactive omp. |
 | `/omp:setup [--stop-gate on\|off]` | Create missing config, print diagnostics, and optionally toggle the Stop gate. |
+| `/omp:mode [subagent\|bash]` | Show or set how Claude waits on jobs (see [Job rows](#job-rows-in-the-agent-panel)). |
 
 Review commands report findings without changing code. Claude checks the cited scenarios;
 findings remain claims to evaluate, not instructions to follow. The Stop gate is off unless
 you enable it.
+
+## Job rows in the agent panel
+
+With `supervise: subagent` (the default), Claude starts the plugin's `omp:job` agent in the
+background for each job it starts, with the description `omp <short id>: <title> [<model>]`,
+or one per group (`omp group <name>: ...`, which wakes Claude once when all of the group's jobs
+are done). The agent runs on haiku and only relays: it loops on `omp-task wait --max-wait 540`
+(a foreground Bash call in a subagent may last 10 minutes at most) and, when the job needs
+Claude or ends, returns the wait output verbatim and stops. Claude answers or approves, then
+starts a new agent for the same job. Each relay costs about 8k haiku tokens (about $0.001).
+
+- **Claude Code**: a row per job in the agent panel. The plugin's `subagentStatusLine`
+  (`omp-task statusline`, refreshed about every 5 s) replaces that row's text with, for
+  example, `omp c525: fix tests · waiting 2m10s · gpt-6-luna · $0.0123 · needs: approval bash:
+  make test` or `... · held for user: question: Which table?`. Other agents' rows keep Claude
+  Code's own rendering. It never starts the daemon.
+- **Orca**: a child row per job (TUI) and an agent row with the description and token count
+  (native chat). Orca and Claude Desktop do not run the status line.
+- **`claude -p` and the SDK**: the relay's result arrives as the task notification (SDK:
+  `system/task_notification` with the result as `summary`).
+
+`/omp:mode bash` (config `supervise: "bash"`) makes Claude wait with a background `omp-task
+wait` Bash command instead, as before 1.6; so does the absence of the Agent tool or of
+background agents. Claude learns the mode from the `next:` lines that `run --detach` (and
+`continue`, `review`, `resume --detach`, `plan apply`) print; a change applies to jobs started
+afterwards.
+
+Plugin settings cannot use `${CLAUDE_PLUGIN_ROOT}`, so the SessionStart hook writes
+`<state dir>/subagent-statusline`, a two-line script that runs this plugin's `omp-task
+statusline`, and the plugin's `settings.json` runs that script. Your own `subagentStatusLine`
+in Claude Code's settings takes precedence over the plugin's; to keep the omp rows, have your
+script pipe its stdin to that file as well and print both outputs (one JSON line per row it
+decorates; rows it prints nothing for keep the default rendering).
+
+Limits: in `claude -p`, background work still running 10 minutes after the last turn is stopped
+unless `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (a background Bash `wait` is stopped after 10
+minutes there in any case). The job itself keeps running in the daemon; only the wake-up is lost.
 
 ## Questions and approvals that are yours
 
@@ -222,8 +264,9 @@ Replace `JOB` below with the returned ID:
 omp-task wait JOB
 ```
 
-Without `--detach`, `run` waits itself. In Claude, the skill backgrounds `wait` and ends the
-turn; terminal users can wait in the foreground. Do not poll status to emulate waiting.
+Without `--detach`, `run` waits itself. In Claude, the skill runs `wait` in the background
+(through the `omp:job` agent, or as a background Bash command with `supervise: bash`) and ends
+the turn; terminal users can wait in the foreground. Do not poll status to emulate waiting.
 
 | Commands | Purpose |
 |---|---|
@@ -232,7 +275,7 @@ turn; terminal users can wait in the foreground. Do not poll status to emulate w
 | `reply JOB TEXT`, `approve JOB [--same\|--rule GLOB\|--session\|--deny]`, `steer JOB TEXT`, `cancel JOB` | Answer, approve/deny, redirect, or abort. |
 | `hold JOB --ref REF [--for 2h]` | Mark a request as put to the user: `wait` stops waking for it; it expires after `--for`. |
 | `status JOB`, `status --group NAME`, `result JOB [--full]`, `list [-C DIR] [--group NAME]`, `summary NAME` | Inspect state, reports, recent jobs, and group spending. |
-| `doctor`, `setup`, `daemon [status\|stop]`, `hook NAME`, `install-binary` | Diagnostics, configuration, daemon control, plugin hooks, and binary installation. |
+| `doctor`, `setup`, `mode [subagent\|bash]`, `daemon [status\|stop]`, `hook NAME`, `install-binary` | Diagnostics, configuration, daemon control, plugin hooks, and binary installation. |
 
 ### Worktrees, reviews, and parallel plans
 
@@ -394,6 +437,9 @@ No repository-local config is loaded automatically, but explicit flags affect ta
 and selected plan files can override configured group limits. These are not immutable
 administrator policies; review plans before running them.
 
+`supervise` is `subagent` (default: the `omp:job` agent relays each job's wake-ups) or `bash`
+(a background `omp-task wait`); set it with `/omp:mode` or `omp-task mode subagent|bash`.
+
 `auto_resume` is off unless enabled. The daemon idles out after 15 minutes without jobs or
 clients. `on_session_end` defaults to `keep`; `cancel` stops that Claude session's jobs.
 Finished jobs and their files expire after `job_retention` (30 days); `0` disables automatic
@@ -442,7 +488,7 @@ State defaults to `~/.local/state/claude-omp/`: `state.db`, `jobs/JOB/`, worktre
 logs. Job artifacts include prompts, raw RPC events (`events.jsonl`), results, and review
 material. They can contain source code and sensitive task context; redact before sharing.
 
-SessionStart records the Claude session ID, SessionEnd optionally cancels its jobs, and Stop
+SessionStart records the Claude session ID and points the status-line script at the plugin, SessionEnd optionally cancels its jobs, and Stop
 runs the opt-in review gate. Interrupted jobs normally resume their saved omp session using
 `resume`; if omp never saved the session, the task can restart instead. `continue` is for
 feedback on a finished job and creates a new job record.

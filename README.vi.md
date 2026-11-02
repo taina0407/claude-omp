@@ -33,6 +33,10 @@ You → Claude ── brief / answers / approvals ──→ omp-task
 
 - **Giám sát theo sự kiện cần xử lý.** Lệnh chờ chạy nền trả về khi Claude cần hành động hoặc
   khi các job hoàn tất. Quy tắc phê duyệt xử lý các lệnh đã biết mà không cần thêm lượt hội thoại.
+- **Mỗi job là một dòng trong bảng agent.** Claude chờ từng job qua một agent nền nhỏ
+  (`omp:job`, chạy haiku), nên job hiện thành một dòng trong bảng agent của Claude Code và Orca.
+  Trong Claude Code, status line của plugin điền vào dòng đó trạng thái, model, thời gian, chi
+  phí và việc job đang chờ. `/omp:mode bash` quay về kiểu chờ bằng lệnh Bash chạy nền.
 - **Quyền truy cập và tách biệt.** Chọn quyền đọc, chỉnh sửa hoặc toàn quyền; dùng Git worktree
   để kiểm tra, áp dụng hoặc loại bỏ thay đổi riêng biệt với bản checkout hiện tại.
 - **Thực thi song song.** Nhóm, quan hệ phụ thuộc, truyền kết quả, giới hạn số job chạy đồng
@@ -191,10 +195,47 @@ Yêu cầu bằng ngôn ngữ thông thường hoặc gọi lệnh có tiền t�
 | `/omp:cancel JOB` | Hủy một job; mặc định, phụ thuộc không thành công khiến các job phụ thuộc bị bỏ qua. |
 | `/omp:transfer` | In lệnh để tiếp tục nội dung hội thoại này trong omp tương tác. |
 | `/omp:setup [--stop-gate on\|off]` | Tạo cấu hình còn thiếu, in chẩn đoán và tùy chọn bật/tắt cổng kiểm tra Stop. |
+| `/omp:mode [subagent\|bash]` | Xem hoặc đặt cách Claude chờ job (xem [Dòng job trong bảng agent](#dòng-job-trong-bảng-agent)). |
 
 Các lệnh kiểm tra báo cáo phát hiện mà không thay đổi mã. Claude kiểm chứng các tình huống
 được viện dẫn; các phát hiện vẫn là nhận định cần đánh giá, không phải chỉ dẫn phải làm theo.
 Cổng kiểm tra Stop mặc định tắt trừ khi được bật.
+
+## Dòng job trong bảng agent
+
+Với `supervise: subagent` (mặc định), mỗi job Claude khởi chạy sẽ có một agent `omp:job` của
+plugin chạy nền, với mô tả `omp <id ngắn>: <tiêu đề> [<model>]`, hoặc một agent cho cả nhóm
+(`omp group <tên>: ...`, chỉ đánh thức Claude một lần khi mọi job của nhóm xong). Agent chạy
+haiku và chỉ chuyển tiếp: nó lặp `omp-task wait --max-wait 540` (một lệnh Bash tiền cảnh trong
+subagent chạy tối đa 10 phút) và, khi job cần Claude hoặc kết thúc, trả lại nguyên văn đầu ra
+của `wait` rồi dừng. Claude trả lời hoặc phê duyệt, rồi khởi chạy một agent mới cho cùng job.
+Mỗi lần chuyển tiếp tốn khoảng 8 nghìn token haiku (khoảng $0.001).
+
+- **Claude Code**: mỗi job một dòng trong bảng agent. `subagentStatusLine` của plugin
+  (`omp-task statusline`, làm mới khoảng 5 giây một lần) thay chữ của dòng đó bằng, ví dụ,
+  `omp c525: fix tests · waiting 2m10s · gpt-6-luna · $0.0123 · needs: approval bash: make
+  test` hoặc `... · held for user: question: Which table?`. Dòng của các agent khác giữ nguyên
+  cách hiển thị của Claude Code. Lệnh này không bao giờ khởi động daemon.
+- **Orca**: mỗi job một dòng con (TUI) và một dòng agent có mô tả và số token (chat gốc). Orca
+  và Claude Desktop không chạy status line.
+- **`claude -p` và SDK**: kết quả của agent đến dưới dạng thông báo tác vụ (SDK:
+  `system/task_notification`, kết quả nằm ở `summary`).
+
+`/omp:mode bash` (cấu hình `supervise: "bash"`) cho Claude chờ bằng lệnh Bash chạy nền
+`omp-task wait` như trước 1.6; Claude cũng làm vậy khi không có công cụ Agent hoặc agent nền.
+Claude biết chế độ qua các dòng `next:` mà `run --detach` (và `continue`, `review`,
+`resume --detach`, `plan apply`) in ra; thay đổi áp dụng cho các job khởi chạy sau đó.
+
+Cài đặt của plugin không dùng được `${CLAUDE_PLUGIN_ROOT}`, nên hook SessionStart ghi
+`<thư mục trạng thái>/subagent-statusline`, một script hai dòng chạy `omp-task statusline` của
+plugin này, và `settings.json` của plugin chạy script đó. `subagentStatusLine` riêng của bạn
+trong cài đặt Claude Code được ưu tiên hơn của plugin; muốn giữ các dòng omp, cho script của
+bạn chuyển stdin của nó vào tệp đó và in cả hai đầu ra (mỗi dòng agent được trang trí là một
+dòng JSON; dòng nào không có đầu ra thì giữ cách hiển thị mặc định).
+
+Giới hạn: trong `claude -p`, việc nền còn chạy 10 phút sau lượt cuối sẽ bị dừng, trừ khi đặt
+`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (ở đó lệnh Bash `wait` chạy nền vẫn bị dừng sau 10
+phút). Bản thân job vẫn chạy trong daemon; chỉ lần đánh thức bị mất.
 
 ## Câu hỏi và yêu cầu phê duyệt thuộc về bạn
 
@@ -233,7 +274,8 @@ Thay `JOB` bên dưới bằng ID được trả về:
 omp-task wait JOB
 ```
 
-Không có `--detach`, `run` tự chờ. Trong Claude, skill cho `wait` chạy nền rồi kết thúc lượt;
+Không có `--detach`, `run` tự chờ. Trong Claude, skill cho `wait` chạy nền (qua agent
+`omp:job`, hoặc lệnh Bash chạy nền khi `supervise: bash`) rồi kết thúc lượt;
 người dùng terminal có thể chờ ở chế độ tiền cảnh. Không liên tục truy vấn trạng thái để
 mô phỏng việc chờ.
 
@@ -244,7 +286,7 @@ mô phỏng việc chờ.
 | `reply JOB TEXT`, `approve JOB [--same\|--rule GLOB\|--session\|--deny]`, `steer JOB TEXT`, `cancel JOB` | Trả lời, phê duyệt/từ chối, điều chỉnh hướng hoặc hủy. |
 | `hold JOB --ref REF [--for 2h]` | Đánh dấu một việc chờ đã được hỏi người dùng: `wait` không còn thức dậy vì nó; nó hết hạn sau `--for`. |
 | `status JOB`, `status --group NAME`, `result JOB [--full]`, `list [-C DIR] [--group NAME]`, `summary NAME` | Xem trạng thái, báo cáo, các job gần đây và chi tiêu của nhóm. |
-| `doctor`, `setup`, `daemon [status\|stop]`, `hook NAME`, `install-binary` | Chẩn đoán, cấu hình, điều khiển daemon, hook của plugin và cài tệp nhị phân. |
+| `doctor`, `setup`, `mode [subagent\|bash]`, `daemon [status\|stop]`, `hook NAME`, `install-binary` | Chẩn đoán, cấu hình, điều khiển daemon, hook của plugin và cài tệp nhị phân. |
 
 ### Worktree, kiểm tra mã và kế hoạch song song
 
@@ -419,6 +461,10 @@ trần hằng ngày tích hợp sẵn. Không tự động nạp cấu hình c�
 hạn nhóm đã cấu hình. Đây không phải chính sách quản trị bất biến; kiểm tra kế hoạch
 trước khi chạy.
 
+`supervise` là `subagent` (mặc định: agent `omp:job` chuyển tiếp các lần đánh thức của từng
+job) hoặc `bash` (lệnh `omp-task wait` chạy nền); đặt bằng `/omp:mode` hoặc
+`omp-task mode subagent|bash`.
+
 `auto_resume` mặc định tắt trừ khi được bật. Daemon tự dừng sau 15 phút không có job hay
 máy khách. `on_session_end` mặc định là `keep`; `cancel` dừng các job của phiên Claude đó.
 Các job đã hoàn tất và tệp của chúng hết thời hạn lưu giữ sau `job_retention` (30 ngày);
@@ -473,7 +519,7 @@ worktree và nhật ký daemon. Các tệp lưu lại của job gồm lời nh�
 từ xa) thô (`events.jsonl`), kết quả và tài liệu kiểm tra. Chúng có thể chứa mã nguồn và
 ngữ cảnh tác vụ nhạy cảm; che thông tin nhạy cảm trước khi chia sẻ.
 
-SessionStart ghi lại ID phiên Claude, SessionEnd có thể hủy các job của phiên theo cấu hình
+SessionStart ghi lại ID phiên Claude và trỏ script status line tới plugin, SessionEnd có thể hủy các job của phiên theo cấu hình
 và Stop chạy cổng kiểm tra nếu đã bật. Job bị gián đoạn thường tiếp tục phiên omp đã lưu
 bằng `resume`; nếu omp chưa từng lưu phiên, tác vụ có thể khởi chạy lại thay thế. `continue`
 dùng để phản hồi về job đã hoàn tất và tạo bản ghi job mới.

@@ -18,6 +18,15 @@ export function stateDir(): string {
 	return join(base, "claude-omp");
 }
 
+/**
+ * The script Claude Code's `subagentStatusLine` runs (settings.json). Plugin settings get no
+ * `${CLAUDE_PLUGIN_ROOT}`, so the SessionStart hook writes this script to point at the plugin, and
+ * settings.json finds it by the same rules as stateDir() (OMP_TASK_HOME, XDG_STATE_HOME).
+ */
+export function statuslineShim(): string {
+	return join(stateDir(), "subagent-statusline");
+}
+
 export function configFile(): string {
 	const override = process.env.OMP_TASK_CONFIG;
 	if (override) return resolve(expand(override));

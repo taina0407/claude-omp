@@ -32,6 +32,7 @@
   "max_writers_per_repo": 1,
   "daily_budget_usd": 10,
   "on_session_end": "keep",
+  "supervise": "subagent",
   "stop_gate": {
     "enabled": false,
     "model": "smol",

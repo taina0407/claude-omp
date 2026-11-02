@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.6.0 (unreleased)
+
+- **Each job is a row in the agent panel.** Claude now waits on a job through the plugin's new
+  `omp:job` agent (`agents/job.md`, haiku, Bash only), started in the background with the
+  description `omp <short id>: <title> [<model>]`, or one per group (`omp group <name>: ...`).
+  The agent loops on `omp-task wait --max-wait 540` and, when the job needs Claude or ends,
+  returns the wait output verbatim; it never answers or approves anything. Claude Code and Orca
+  show the job as an agent row, `claude -p` and the SDK get the output as the agent's task
+  notification. Each relay costs about 8k haiku tokens (about $0.001).
+- **Status line for those rows** (Claude Code TUI): the plugin's `settings.json` sets
+  `subagentStatusLine` to the hidden `omp-task statusline`, which replaces an omp row's text with
+  the job's state, elapsed time, model, cost and what it waits on (`needs: approval bash: make
+  test`, `held for user: ...`, a group's counts). Other agents' rows are left as Claude Code
+  draws them; it never starts the daemon and gives up after 3 s. Plugin settings get no
+  `${CLAUDE_PLUGIN_ROOT}`, so the SessionStart hook writes `<state dir>/subagent-statusline`
+  pointing at the plugin. A `subagentStatusLine` of your own takes precedence.
+- **`supervise` setting and `/omp:mode [subagent|bash]`** (`omp-task mode`): `subagent` is the
+  default; `bash` brings back the background Bash `wait` of 1.5. `run`/`continue`/`review`/
+  `resume --detach` and `plan apply` now end with `next:` lines for the configured mode (with the
+  agent's exact description and prompt), and `--json` detached starts carry `supervise` and, for
+  `subagent`, `agent: {description, prompt}`. Without the Agent tool or background agents, the
+  skill falls back to the Bash wait.
+- Notices in `wait` output say "re-arm the same wait" for either mode. A `-g` job's `next:`
+  line asks for one wait for the whole group once all of its jobs are started.
+
 ## 1.5.0 (2026-11-03)
 
 Removes the Claude Code UI of 1.4 (the hooks module): read the first item before upgrading.

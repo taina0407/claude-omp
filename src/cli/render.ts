@@ -175,7 +175,9 @@ function printNotices(jobId: string, notices: Notice[]): void {
 	} else {
 		out(`  look:   omp-task status ${jobId}   redirect: omp-task steer ${jobId} "..."`);
 	}
-	out("  then:   re-run the same `omp-task wait` (same ids or --group) in the background");
+	out(
+		"  then:   re-arm the same wait (same ids or --group): the omp:job agent, or a background `omp-task wait`",
+	);
 }
 
 export function emitJob(

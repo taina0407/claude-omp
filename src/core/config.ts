@@ -9,6 +9,10 @@ import { UsageError } from "./util";
 
 const duration = z.union([z.string(), z.number()]);
 
+export const SUPERVISE_MODES = ["subagent", "bash"] as const;
+export type SuperviseMode = (typeof SUPERVISE_MODES)[number];
+export const DEFAULT_SUPERVISE: SuperviseMode = "subagent";
+
 const settings = z.looseObject({
 	model: z.string().optional(),
 	access: z.enum(["read", "edit", "full"]).optional(),
@@ -62,6 +66,12 @@ const configSchema = z.looseObject({
 	daily_budget_usd: z.number().positive().optional(),
 	/** Default limits per group name; `plan apply` can set them too. */
 	groups: z.record(z.string(), groupLimits).optional(),
+	/**
+	 * How Claude waits on jobs: `subagent` (default) starts the plugin's `omp:job` agent in the
+	 * background, one row per job in the host's agent panel; `bash` runs `omp-task wait` as a
+	 * background Bash command, as before 1.6. `run --detach` tells Claude which (its `next:` line).
+	 */
+	supervise: z.enum(SUPERVISE_MODES).optional(),
 	/** When a Claude Code session ends: keep its running jobs (default) or cancel them. */
 	on_session_end: z.enum(["keep", "cancel"]).optional(),
 	/** Opt-in Stop hook: review uncommitted changes before Claude finishes a turn. */
@@ -97,6 +107,15 @@ export function loadConfig(path = configFile()): Config {
 		throw new UsageError(`invalid config in ${path}: ${z.prettifyError(parsed.error)}`);
 	}
 	return parsed.data;
+}
+
+/** The configured supervise mode; the default when unset or the config does not load. */
+export function superviseMode(path = configFile()): SuperviseMode {
+	try {
+		return loadConfig(path).supervise ?? DEFAULT_SUPERVISE;
+	} catch {
+		return DEFAULT_SUPERVISE;
+	}
 }
 
 export function getPreset(config: Config, name: string): Settings {

@@ -22,7 +22,13 @@ import type {
 	WaitResponse,
 	WaitView,
 } from "../api/schema";
-import { loadConfig } from "../core/config";
+import {
+	DEFAULT_SUPERVISE,
+	loadConfig,
+	SUPERVISE_MODES,
+	type SuperviseMode,
+	superviseMode,
+} from "../core/config";
 import type { JobOptions } from "../core/jobs";
 import { COMPILED, configFile, ompBin, preambleFile, socketPath, stateDir } from "../core/paths";
 import { orderPlan, readPlanFile } from "../core/plan";
@@ -48,6 +54,7 @@ import {
 	pendingSummary,
 	resolvedSummary,
 } from "./render";
+import { statuslineMain } from "./statusline";
 
 const EXIT_FAILED = 1;
 const EXIT_USAGE = 2;
@@ -142,6 +149,8 @@ Commands:
                            (--dry-run: print the order only; --json)
   doctor                   check the omp install, the daemon and the configuration
   setup [--stop-gate on|off]  create the config file if missing; turn the Stop review gate on/off
+  mode [subagent|bash]     how Claude waits on jobs: the omp:job agent (default) or a background
+                           Bash wait; no argument shows the current mode
   hook <name>              run a Claude Code hook (session-start, session-end, stop-gate)
   daemon [status|stop]     run the daemon in the foreground, show it, or stop it (--force)
   install-binary           download this version's release binary (checks its sha256)
@@ -370,6 +379,55 @@ function emitResolved(views: WaitView[]): void {
 	for (const r of views.flatMap((v) => v.resolved ?? [])) out(resolvedSummary(r));
 }
 
+/** The agent type of the plugin's relay (agents/job.md in the plugin named omp). */
+const JOB_AGENT = "omp:job";
+
+/** What Claude waits on for a job just started: the job, or its whole group. */
+export function waitTarget(job: Pick<Job, "id" | "title" | "model" | "groupName">): {
+	description: string;
+	prompt: string;
+} {
+	if (job.groupName) {
+		return {
+			description: `omp group ${job.groupName}: its jobs`,
+			prompt: `omp-task wait --group ${job.groupName}`,
+		};
+	}
+	const raw = job.title.replace(/[[\]\s]+/g, " ").trim();
+	const title = raw.length > 50 ? `${raw.slice(0, 49)}…` : raw;
+	return {
+		description: `omp ${job.id.slice(-4)}: ${title} [${job.model ?? "default"}]`,
+		prompt: `omp-task wait ${job.id}`,
+	};
+}
+
+/**
+ * The `next:` lines of a detached start: how to wait on the job in the configured supervise mode.
+ * This is how Claude learns the mode (the skill does not guess it).
+ */
+export function nextSteps(
+	mode: SuperviseMode,
+	job: Pick<Job, "id" | "title" | "model" | "groupName">,
+): string[] {
+	const t = waitTarget(job);
+	const group = job.groupName
+		? [`once every job of group ${job.groupName} is started, `, " for the whole group"]
+		: ["", ""];
+	if (mode === "bash") {
+		return [
+			`next: ${group[0]}run \`${t.prompt}\` in the background and end your turn;`,
+			"it returns only when the job ends or needs you. (supervise: bash)",
+		];
+	}
+	return [
+		`next: ${group[0]}start the ${JOB_AGENT} agent${group[1]} and end your turn (supervise: subagent):`,
+		`Agent tool, subagent_type "${JOB_AGENT}", run_in_background true,`,
+		`description "${t.description}", prompt "${t.prompt}".`,
+		"It returns when the job ends or needs you. Without the Agent tool or background agents:",
+		`\`${t.prompt}\` as a background Bash command instead.`,
+	];
+}
+
 async function afterStart(
 	client: Client,
 	view: JobView,
@@ -380,10 +438,16 @@ async function afterStart(
 	for (const w of view.warnings ?? []) process.stderr.write(`warning: ${w}\n`);
 	if (values.detach) {
 		if (values.json) {
+			const mode = superviseMode();
+			const target = waitTarget(job);
 			out(
 				JSON.stringify({
 					id: job.id,
 					status: job.status,
+					supervise: mode,
+					...(mode === "subagent"
+						? { agent: { description: target.description, prompt: target.prompt } }
+						: {}),
 					...(view.queueReason ? { queue_reason: view.queueReason } : {}),
 					...(view.warnings?.length ? { warnings: view.warnings } : {}),
 				}),
@@ -392,8 +456,7 @@ async function afterStart(
 			const waiting = job.status === "blocked" || job.status === "queued";
 			out(`job ${job.id} ${verb}${waiting ? ` (${job.status})` : ""}`);
 			if (view.queueReason) out(`  queued: ${view.queueReason}`);
-			out(`  next: run \`omp-task wait ${job.id}\` in the background and end your turn;`);
-			out("  it returns only when the job ends or needs you.");
+			for (const line of nextSteps(superviseMode(), job)) out(`  ${line}`);
 		}
 		return 0;
 	}
@@ -871,7 +934,43 @@ const commands: Record<string, Command> = {
 		}
 		out(`group ${res.group}: ${res.jobs.length} job(s)`);
 		for (const j of res.jobs) out(`  ${j.name.padEnd(16)} ${j.id}  ${j.status}`);
-		out(`  next: run \`omp-task wait --group ${res.group}\` in the background and end your turn.`);
+		// Every job of the plan is started: the group is waited on as one.
+		const steps = nextSteps(superviseMode(), {
+			id: res.group,
+			title: res.group,
+			model: null,
+			groupName: res.group,
+		}).map((l) => l.replace(/^next: once every job of group \S+ is started, /, "next: "));
+		for (const line of steps) out(`  ${line}`);
+		return 0;
+	},
+
+	async mode(argv) {
+		const { positionals } = parse(argv, {});
+		const [mode, extra] = positionals;
+		if (extra) throw new UsageError("usage: omp-task mode [subagent|bash]");
+		const file = configFile();
+		if (mode !== undefined) {
+			if (!(SUPERVISE_MODES as readonly string[]).includes(mode)) {
+				throw new UsageError(`mode takes ${SUPERVISE_MODES.join(" or ")}`);
+			}
+			loadConfig(file); // refuse to rewrite a file that does not parse
+			const raw = existsSync(file)
+				? (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>)
+				: {};
+			raw.supervise = mode;
+			mkdirSync(dirname(file), { recursive: true });
+			writeFileSync(file, `${JSON.stringify(raw, null, 2)}\n`);
+		}
+		const current = loadConfig(file).supervise;
+		const shown = current ?? DEFAULT_SUPERVISE;
+		out(`supervise: ${shown}${current ? ` (${file})` : " (default)"}`);
+		out(
+			shown === "subagent"
+				? "  Claude waits on each job through the omp:job agent, one row per job in the agent panel"
+				: "  Claude waits on jobs with a background `omp-task wait` Bash command",
+		);
+		if (mode !== undefined) out("  applies to jobs started from now on");
 		return 0;
 	},
 
@@ -908,6 +1007,11 @@ const commands: Record<string, Command> = {
 
 	async hook(argv) {
 		return hookMain(argv[0]);
+	},
+
+	/** Hidden: Claude Code's subagentStatusLine for the omp job relays (src/cli/statusline.ts). */
+	async statusline() {
+		return statuslineMain();
 	},
 
 	async doctor() {

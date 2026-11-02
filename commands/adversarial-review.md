@@ -10,7 +10,8 @@ Run an adversarial omp review: the worker assumes the change is broken and tries
    `$ARGUMENTS` as they are and put any free text into `--focus "<text>"`. A stronger model
    suits this (for example `-m slow`) unless the user named one. If it exits 2, show the error
    (for example "nothing to review") and stop.
-2. Run `omp-task wait <job id>` as a **background** command and end your turn. Do not poll.
+2. Arm the wait its `next:` lines name (the `omp:job` agent in the background, or
+   `omp-task wait <job id>` as a **background** Bash command) and end your turn. Do not poll.
 3. If the last line is `WAKE: <job> <reason>` rather than `WAKE: done`: answer a question with
    `omp-task reply`, `omp-task resume <job> --detach` an interrupted one, or `omp-task cancel` a
    stalled one; then re-arm the same `wait`. If the review did not complete, say so and stop.

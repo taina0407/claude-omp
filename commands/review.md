@@ -10,7 +10,8 @@ Run an omp code review and report its findings.
    they are and put any free text into `--focus "<text>"` (review takes no other arguments).
    No target flag = the uncommitted changes, untracked files included. If it exits 2, show the
    error (for example "nothing to review") and stop.
-2. Run `omp-task wait <job id>` as a **background** command and end your turn. Do not poll, do
+2. Arm the wait its `next:` lines name (the `omp:job` agent in the background, or
+   `omp-task wait <job id>` as a **background** Bash command) and end your turn. Do not poll, do
    not watch the feed. You will be notified when it returns.
 3. If the last line is `WAKE: <job> <reason>` rather than `WAKE: done`: answer a question with
    `omp-task reply`, `omp-task resume <job> --detach` an interrupted one, or `omp-task cancel` a
