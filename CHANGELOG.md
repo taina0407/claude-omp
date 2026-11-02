@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0 (unreleased)
+## 1.6.0 (2026-11-03)
 
 - **Each job is a row in the agent panel.** Claude now waits on a job through the plugin's new
   `omp:job` agent (`agents/job.md`, haiku, Bash only), started in the background with the
