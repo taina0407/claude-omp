@@ -200,7 +200,10 @@ or one per group (`omp group <name>: ...`, which wakes Claude once when all of t
 are done). The agent runs on haiku and only relays: it loops on `omp-task wait --max-wait 540`
 (a foreground Bash call in a subagent may last 10 minutes at most) and, when the job needs
 Claude or ends, returns the wait output verbatim and stops. Claude answers or approves, then
-starts a new agent for the same job. Each relay costs about 8k haiku tokens (about $0.001).
+re-arms the same agent with SendMessage: it resumes in the background as the same row and wakes
+Claude the same way. Claude starts a fresh agent only when that fails (for example after a
+resumed session) or after 20 re-arms, since each round adds about 1k tokens to the agent's
+context. The first relay costs about 8k haiku tokens (about $0.001), a re-arm $0.0004 to $0.0008.
 
 - **Claude Code**: a row per job in the agent panel. The plugin's `subagentStatusLine`
   (`omp-task statusline`, refreshed about every 5 s) replaces that row's text with, for
@@ -225,9 +228,12 @@ in Claude Code's settings takes precedence over the plugin's; to keep the omp ro
 script pipe its stdin to that file as well and print both outputs (one JSON line per row it
 decorates; rows it prints nothing for keep the default rendering).
 
-Limits: in `claude -p`, background work still running 10 minutes after the last turn is stopped
-unless `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (a background Bash `wait` is stopped after 10
-minutes there in any case). The job itself keeps running in the daemon; only the wake-up is lost.
+Limits: in `claude -p` and the Agent SDK, background agents still running 10 minutes after
+Claude's last turn are stopped. For jobs that may run longer, start Claude there with
+`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. In `bash` mode a background Bash `wait` is also
+stopped at the Bash tool's `timeout`, 10 minutes by default there (the skill asks for the
+largest allowed and re-arms). Either way the job itself keeps running in the daemon; only the
+wake-up is lost.
 
 ## Questions and approvals that are yours
 

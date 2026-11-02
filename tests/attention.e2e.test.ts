@@ -75,6 +75,7 @@ describe("checkpoints", () => {
 		expect(first.stdout).toContain("CHECKPOINT: design done");
 		expect(first.stdout).toContain("x END\n");
 		expect(first.stdout).toContain(`WAKE: ${job} checkpoint`);
+		expect(first.stdout).toContain("SendMessage it to the omp:job relay that woke you");
 		// Delivered once: the next wait keeps waiting.
 		await sb.cli(["wait", job, "--max-wait", "1"], [3]);
 		await sb.cli(["steer", job, "go on"]);

@@ -15,7 +15,8 @@ Run an omp code review and report its findings.
    not watch the feed. You will be notified when it returns.
 3. If the last line is `WAKE: <job> <reason>` rather than `WAKE: done`: answer a question with
    `omp-task reply`, `omp-task resume <job> --detach` an interrupted one, or `omp-task cancel` a
-   stalled one; then re-arm the same `wait`. If the review did not complete, say so and stop.
+   stalled one; then re-arm the same `wait` (SendMessage the same prompt to the relay that woke
+   you, or the same background Bash command). If the review did not complete, say so and stop.
 4. When it is done: run `omp-task result <job> --full` (the wake output may be cut) and show
    the user the review as printed (verdict, then findings by severity). Then, for each critical
    or high finding, read the code it points to and say whether you agree. Do not change any

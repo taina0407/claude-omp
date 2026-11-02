@@ -176,7 +176,7 @@ function printNotices(jobId: string, notices: Notice[]): void {
 		out(`  look:   omp-task status ${jobId}   redirect: omp-task steer ${jobId} "..."`);
 	}
 	out(
-		"  then:   re-arm the same wait (same ids or --group): the omp:job agent, or a background `omp-task wait`",
+		"  then:   re-arm the same wait (same ids or --group): SendMessage it to the omp:job relay that woke you, or a background `omp-task wait`",
 	);
 }
 

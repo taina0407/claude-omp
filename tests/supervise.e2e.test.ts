@@ -74,6 +74,7 @@ describe("next: lines", () => {
 		expect(lines).toContain('subagent_type "omp:job", run_in_background true');
 		expect(lines).toContain('description "omp ab12: fix the flaky tests in auth [smol]"');
 		expect(lines).toContain("(supervise: subagent)");
+		expect(lines).toContain("re-arm it by SendMessage of the same prompt to it");
 		expect(lines).toContain("`omp-task wait 20261103-170000-ab12` as a background Bash command");
 	});
 

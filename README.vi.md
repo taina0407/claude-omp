@@ -208,8 +208,11 @@ plugin chạy nền, với mô tả `omp <id ngắn>: <tiêu đề> [<model>]`, 
 (`omp group <tên>: ...`, chỉ đánh thức Claude một lần khi mọi job của nhóm xong). Agent chạy
 haiku và chỉ chuyển tiếp: nó lặp `omp-task wait --max-wait 540` (một lệnh Bash tiền cảnh trong
 subagent chạy tối đa 10 phút) và, khi job cần Claude hoặc kết thúc, trả lại nguyên văn đầu ra
-của `wait` rồi dừng. Claude trả lời hoặc phê duyệt, rồi khởi chạy một agent mới cho cùng job.
-Mỗi lần chuyển tiếp tốn khoảng 8 nghìn token haiku (khoảng $0.001).
+của `wait` rồi dừng. Claude trả lời hoặc phê duyệt, rồi kích hoạt lại chính agent đó bằng
+SendMessage: nó chạy tiếp trong nền, vẫn là dòng cũ, và đánh thức Claude theo cùng cách. Claude
+chỉ khởi chạy agent mới khi việc đó thất bại (ví dụ sau khi phiên được tiếp tục) hoặc sau 20
+lần kích hoạt lại, vì mỗi vòng thêm khoảng 1 nghìn token vào ngữ cảnh của agent. Lần chuyển tiếp
+đầu tốn khoảng 8 nghìn token haiku (khoảng $0.001), mỗi lần kích hoạt lại $0.0004 đến $0.0008.
 
 - **Claude Code**: mỗi job một dòng trong bảng agent. `subagentStatusLine` của plugin
   (`omp-task statusline`, làm mới khoảng 5 giây một lần) thay chữ của dòng đó bằng, ví dụ,
@@ -233,9 +236,12 @@ trong cài đặt Claude Code được ưu tiên hơn của plugin; muốn giữ
 bạn chuyển stdin của nó vào tệp đó và in cả hai đầu ra (mỗi dòng agent được trang trí là một
 dòng JSON; dòng nào không có đầu ra thì giữ cách hiển thị mặc định).
 
-Giới hạn: trong `claude -p`, việc nền còn chạy 10 phút sau lượt cuối sẽ bị dừng, trừ khi đặt
-`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (ở đó lệnh Bash `wait` chạy nền vẫn bị dừng sau 10
-phút). Bản thân job vẫn chạy trong daemon; chỉ lần đánh thức bị mất.
+Giới hạn: trong `claude -p` và Agent SDK, agent nền còn chạy 10 phút sau lượt cuối của Claude
+sẽ bị dừng. Với job có thể chạy lâu hơn, hãy khởi động Claude ở đó với
+`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. Ở chế độ `bash`, lệnh Bash `wait` chạy nền còn bị
+dừng khi hết `timeout` của công cụ Bash, mặc định 10 phút ở đó (skill yêu cầu mức lớn nhất được
+phép và kích hoạt lại). Dù thế nào, bản thân job vẫn chạy trong daemon; chỉ lần đánh thức bị
+mất.
 
 ## Câu hỏi và yêu cầu phê duyệt thuộc về bạn
 

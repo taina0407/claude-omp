@@ -8,7 +8,15 @@
   The agent loops on `omp-task wait --max-wait 540` and, when the job needs Claude or ends,
   returns the wait output verbatim; it never answers or approves anything. Claude Code and Orca
   show the job as an agent row, `claude -p` and the SDK get the output as the agent's task
-  notification. Each relay costs about 8k haiku tokens (about $0.001).
+  notification. After answering or approving, Claude re-arms the same agent with SendMessage:
+  it resumes in the background as the same row and wakes Claude the same way. A new agent is
+  started only when that fails or after 20 re-arms (each round adds about 1k tokens to the
+  agent's context). The first relay costs about 8k haiku tokens (about $0.001), a re-arm
+  $0.0004 to $0.0008.
+- **Long jobs in `claude -p` and the SDK**: background agents still running 10 minutes after
+  Claude's last turn are stopped there unless `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`; in `bash`
+  mode the skill now gives the background `wait` the largest Bash `timeout` allowed (10 minutes
+  by default in `-p`) and re-arms it when stopped. Both are documented in the README.
 - **Status line for those rows** (Claude Code TUI): the plugin's `settings.json` sets
   `subagentStatusLine` to the hidden `omp-task statusline`, which replaces an omp row's text with
   the job's state, elapsed time, model, cost and what it waits on (`needs: approval bash: make
@@ -22,7 +30,8 @@
   agent's exact description and prompt), and `--json` detached starts carry `supervise` and, for
   `subagent`, `agent: {description, prompt}`. Without the Agent tool or background agents, the
   skill falls back to the Bash wait.
-- Notices in `wait` output say "re-arm the same wait" for either mode. A `-g` job's `next:`
+- Notices in `wait` output say "re-arm the same wait" for either mode (SendMessage to the relay,
+  or the background Bash command). A `-g` job's `next:`
   line asks for one wait for the whole group once all of its jobs are started.
 
 ## 1.5.0 (2026-11-03)

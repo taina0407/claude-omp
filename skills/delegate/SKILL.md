@@ -35,7 +35,9 @@ interrupted job. How you arm it is the `supervise` setting (`/omp:mode`); never 
   as the agent's completion notification. It never answers or approves anything: you do.
 - **`supervise: bash`**, or when the Agent tool or background agents are unavailable (you are a
   subagent yourself, the tool is denied, the host does not run background agents): run
-  `omp-task wait <id...>` (or `--group G`) as a **background** Bash command.
+  `omp-task wait <id...>` (or `--group G`) as a **background** Bash command, with the largest
+  `timeout` the Bash tool allows: a background command is stopped at its `timeout` (by default
+  10 minutes in `claude -p`). When one is stopped that way, re-arm it.
 - Either way, read the **last lines**, not the exit code: `WAKE: <id> <reason>` (with one
   `PENDING: <id> …` line per open question or approval just above it) or `WAKE: done (2
   completed)`. `wait` exits 0 both when every job completed and when one needs you; 1 means a
@@ -44,11 +46,21 @@ interrupted job. How you arm it is the `supervise` setting (`/omp:mode`); never 
   fix that, then arm the wait again.
 - Never poll, sleep-loop, or check "how it is going". Do not put `omp-task watch` on Monitor
   unless the user asks for a live view; piped, it prints only the same attention lines anyway.
-- After you answer or approve, **re-arm the same wait** in the same turn: a new `omp:job` agent
-  with the same description and prompt (the one that woke you has ended), or the same background
-  Bash command, so the other jobs keep waking you too. A job that ended needs no new wait.
+- After you answer or approve, **re-arm the same wait** in the same turn, so the other jobs keep
+  waking you too. A job that ended needs no new wait.
+  - Agent: message the relay that woke you with the SendMessage tool (`to`: the `agentId` from
+    its Agent result, `message`: its prompt again, `omp-task wait <id>`; load the tool with
+    ToolSearch `select:SendMessage` when it is not listed). It resumes in the background as the
+    same row and wakes you the same way. Start a new `omp:job` agent with the same description
+    and prompt instead only when SendMessage fails (the agent is gone, the session was resumed)
+    or after you re-armed that agent 20 times (each round adds about 1k tokens to its context).
+  - Bash: the same background Bash command.
 - One wait per job you started on its own, one per group (`-g`, `plan apply`): a group wait
   wakes you once when all of its jobs are done instead of once per job.
+- In `claude -p` and the Agent SDK, background agents still running 10 minutes after your last
+  turn are stopped unless the session runs with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. The
+  job goes on in the daemon, but nothing wakes you: before a job there that may run longer,
+  tell the user about that variable.
 
 ## When delegating pays off
 
@@ -103,7 +115,7 @@ when it needs this conversation's nuance, touches files you are editing, or is a
      plain `watch` follows a running job until it ends), then steer or `omp-task cancel <id>`;
    - interrupted (the daemon restarted) → `omp-task resume <id> --detach` (without `--detach`
      it blocks until the job ends or needs you).
-   Then re-arm the same wait (agent or background Bash). Unanswered items expire after 20m (questions continue
+   Then re-arm the same wait (SendMessage to the relay, or the background Bash). Unanswered items expire after 20m (questions continue
    on an assumption, approvals are denied).
 6. **Review. Never skip it.** `wait` shows the first 40 lines of the report; `omp-task result
    <id> --full` has the rest. The report is a claim. Read the real changes: for a checkout job

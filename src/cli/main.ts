@@ -423,7 +423,8 @@ export function nextSteps(
 		`next: ${group[0]}start the ${JOB_AGENT} agent${group[1]} and end your turn (supervise: subagent):`,
 		`Agent tool, subagent_type "${JOB_AGENT}", run_in_background true,`,
 		`description "${t.description}", prompt "${t.prompt}".`,
-		"It returns when the job ends or needs you. Without the Agent tool or background agents:",
+		"It returns when the job ends or needs you; re-arm it by SendMessage of the same prompt to it.",
+		"Without the Agent tool or background agents:",
 		`\`${t.prompt}\` as a background Bash command instead.`,
 	];
 }
