@@ -20,7 +20,7 @@ afterEach(async () => {
 const daemonRunning = () => existsSync(join(sb.stateDir, "daemon.lock"));
 
 /** What Claude Code sends: the session, the row width and the agent panel's rows. */
-function input(tasks: Record<string, unknown>[], session = "s1") {
+function input(tasks: unknown[], session = "s1") {
 	return { session_id: session, columns: 200, tasks };
 }
 
@@ -63,6 +63,8 @@ describe("statusline", () => {
 				omp("a3", `omp ${short}: not ours`, "general-purpose"),
 				omp("a4", "omp ffff: a job that does not exist"),
 				omp("a5", "something else entirely"),
+				null, // one bad row hides no other
+				{ ...omp("a6", `omp ${short}: an earlier relay [smol]`), status: "completed" },
 			]),
 		);
 		const out = lines(r);
@@ -132,6 +134,33 @@ describe("the plugin's subagentStatusLine", () => {
 	test("exits 0 quietly until a session wrote the shim", async () => {
 		const r = await run(input([omp("a1", "omp ab12: x")]));
 		expect(r).toEqual({ code: 0, stdout: "", stderr: "" });
+	});
+
+	test("finds the shim under an OMP_TASK_HOME of ~/..., as stateDir() does", async () => {
+		/** The path the settings command looks at, under `env`. */
+		async function shimPath(env: Record<string, string | undefined>): Promise<string> {
+			const probe = command.replace(/\[ -x "\$f" \] && exec "\$f"; exit 0$/, 'echo "$f"');
+			expect(probe).not.toBe(command);
+			const p = Bun.spawn(["sh", "-c", probe], { env, stdout: "pipe" });
+			return (await new Response(p.stdout).text()).trim();
+		}
+		const env = { HOME: sb.base, OMP_TASK_HOME: "~/home-state" };
+		await sb.hook("session-start", { session_id: "s1" }, { ...env, CLAUDE_PLUGIN_ROOT: ROOT });
+		const shim = join(sb.base, "home-state", "subagent-statusline");
+		expect(existsSync(shim)).toBe(true);
+		expect(await shimPath({ ...sb.env, ...env })).toBe(shim);
+		// A relative XDG_STATE_HOME is ignored, as stateDir() ignores it.
+		const xdg = { ...sb.env, HOME: sb.base, OMP_TASK_HOME: "", XDG_STATE_HOME: "rel" };
+		expect(await shimPath(xdg)).toBe(
+			join(sb.base, ".local", "state", "claude-omp", "subagent-statusline"),
+		);
+		expect(await shimPath({ ...xdg, XDG_STATE_HOME: "/abs" })).toBe(
+			"/abs/claude-omp/subagent-statusline",
+		);
+		// A relative OMP_TASK_HOME would differ with the cwd: refused.
+		expect((await sb.cli(["list"], [2], { OMP_TASK_HOME: "state" })).stderr).toContain(
+			"OMP_TASK_HOME must be an absolute path",
+		);
 	});
 
 	test("session-start points the shim at the plugin; the command then reaches statusline", async () => {

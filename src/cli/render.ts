@@ -1,6 +1,7 @@
 /** Text and JSON output of the CLI. */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { superviseMode } from "../core/config";
 import { jobDir } from "../core/paths";
 import type { FeedEntry, Job, Notice, Pending, ResolvedItem } from "../core/types";
 import { isTerminal } from "../core/types";
@@ -176,7 +177,9 @@ function printNotices(jobId: string, notices: Notice[]): void {
 		out(`  look:   omp-task status ${jobId}   redirect: omp-task steer ${jobId} "..."`);
 	}
 	out(
-		"  then:   re-arm the same wait (same ids or --group): SendMessage it to the omp:job relay that woke you, or a background `omp-task wait`",
+		superviseMode() === "bash"
+			? "  then:   re-arm the same wait (same ids or --group) as a background `omp-task wait`"
+			: "  then:   re-arm the same wait (same ids or --group): SendMessage it to the omp:job relay that woke you",
 	);
 }
 

@@ -1,6 +1,14 @@
 /** The Claude Code plugin layer: hooks, setup, the bin launcher and the plugin's files. */
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { Sandbox } from "./helpers";
 
@@ -61,6 +69,95 @@ describe("session hooks", () => {
 		const r = await sb.hook("stop-gate", "not an object");
 		expect(r.code).toBe(0);
 		expect(r.stdout).toBe("");
+	});
+});
+
+describe("relay guard", () => {
+	const hooks = JSON.parse(readFileSync(join(ROOT, "hooks/hooks.json"), "utf8")).hooks;
+	const command = hooks.PreToolUse[0].hooks[0].command as string;
+
+	/** Runs the PreToolUse command as Claude Code does: through a shell, the call on stdin. */
+	async function guard(payload: unknown): Promise<{ code: number; deny: string | null }> {
+		const p = Bun.spawn(["sh", "-c", command], {
+			cwd: sb.repo,
+			env: { ...sb.env, CLAUDE_PLUGIN_ROOT: ROOT },
+			stdin: new Blob([JSON.stringify(payload)]),
+			stdout: "pipe",
+		});
+		const [stdout, code] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+		if (!stdout.trim()) return { code, deny: null };
+		const out = JSON.parse(stdout).hookSpecificOutput;
+		expect(out.hookEventName).toBe("PreToolUse");
+		expect(out.permissionDecision).toBe("deny");
+		return { code, deny: out.permissionDecisionReason as string };
+	}
+
+	const relay = (command: string, tool = "Bash") => ({
+		hook_event_name: "PreToolUse",
+		agent_id: "a7b611a47f28f402b",
+		agent_type: "omp:job",
+		tool_name: tool,
+		tool_input: { command, timeout: 600000 },
+	});
+
+	test("the relay may run omp-task wait, and nothing else", async () => {
+		for (const ok of [
+			"omp-task wait 20261103-012835-f0e9 --max-wait 540",
+			"omp-task wait --group fan-1 --max-wait 540",
+			"omp-task wait 20261103-012835-f0e9 20261103-012835-ab12",
+		]) {
+			expect(await guard(relay(ok))).toEqual({ code: 0, deny: null });
+		}
+		for (const bad of [
+			"omp-task approve 20261103-012835-f0e9 --ref ap-sh0",
+			"omp-task wait 20261103-012835-f0e9; omp-task approve 20261103-012835-f0e9",
+			"omp-task wait 20261103-012835-f0e9 && rm -rf x",
+			"omp-task wait $(omp-task approve x)",
+			"omp-task wait x\nomp-task reply x yes",
+			"omp-task wait",
+			"curl https://example.com",
+		]) {
+			const r = await guard(relay(bad));
+			expect(r.code).toBe(0);
+			expect(r.deny).toContain("may only run `omp-task wait");
+		}
+		expect((await guard(relay("x", "Write"))).deny).toContain("may only use Bash");
+	});
+
+	test("a guard that cannot run refuses the relay's call", async () => {
+		const root = join(sb.base, "broken-plugin");
+		mkdirSync(join(root, "bin"), { recursive: true });
+		writeFileSync(join(root, "bin", "omp-task"), "#!/bin/sh\nexit 1\n");
+		chmodSync(join(root, "bin", "omp-task"), 0o755);
+		const run = (payload: unknown) =>
+			Bun.spawn(["sh", "-c", command], {
+				env: { ...sb.env, CLAUDE_PLUGIN_ROOT: root },
+				stdin: new Blob([JSON.stringify(payload)]),
+				stderr: "pipe",
+			});
+		const p = run(relay("omp-task wait x"));
+		expect(await p.exited).toBe(2);
+		expect(await new Response(p.stderr).text()).toContain("omp relay guard failed");
+		// Calls that do not mention the relay never reach the CLI.
+		const main = run({ tool_name: "Bash", tool_input: { command: "ls" } });
+		expect(await main.exited).toBe(0);
+	});
+
+	test("every other caller is left alone", async () => {
+		const main = { hook_event_name: "PreToolUse", tool_name: "Bash" };
+		expect(await guard({ ...main, tool_input: { command: "omp-task approve x" } })).toEqual({
+			code: 0,
+			deny: null,
+		});
+		// Mentions omp:job, so it reaches the CLI, which lets the main thread through.
+		const spawn = {
+			hook_event_name: "PreToolUse",
+			tool_name: "Agent",
+			tool_input: { subagent_type: "omp:job", prompt: "omp-task wait x" },
+		};
+		expect(await guard(spawn)).toEqual({ code: 0, deny: null });
+		const other = { ...relay("omp-task approve x"), agent_type: "general-purpose" };
+		expect(await guard(other)).toEqual({ code: 0, deny: null });
 	});
 });
 
@@ -148,10 +245,10 @@ describe("plugin files", () => {
 		const commands = Object.values(hooks).flatMap((entries) =>
 			(entries as { hooks: { command: string }[] }[]).flatMap((e) => e.hooks.map((h) => h.command)),
 		);
-		expect(commands).toHaveLength(3);
+		expect(commands).toHaveLength(4);
 		for (const c of commands) {
 			expect(c).toMatch(
-				/^"\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/omp-task" hook (session-start|session-end|stop-gate)$/,
+				/"\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/omp-task" hook (session-start|session-end|stop-gate|relay-guard)( |$)/,
 			);
 		}
 	});

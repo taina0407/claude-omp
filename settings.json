@@ -1,6 +1,6 @@
 {
   "subagentStatusLine": {
     "type": "command",
-    "command": "f=\"${OMP_TASK_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-omp}/subagent-statusline\"; [ -x \"$f\" ] && exec \"$f\"; exit 0"
+    "command": "h=${OMP_TASK_HOME:-}; case $h in \"~/\"*) h=$HOME/${h#\"~/\"} ;; esac; if [ -z \"$h\" ]; then x=${XDG_STATE_HOME:-}; case $x in /*) ;; *) x=$HOME/.local/state ;; esac; h=$x/claude-omp; fi; f=$h/subagent-statusline; [ -x \"$f\" ] && exec \"$f\"; exit 0"
   }
 }

@@ -95,7 +95,9 @@ when it needs this conversation's nuance, touches files you are editing, or is a
    - question → `omp-task reply <id> "<answer>"`. Decide it yourself when the brief, the code
      or the conversation settles it; one that is the user's call goes to them (see "Putting an
      item to the user" below);
-   - approval → `omp-task approve <id>` for what the brief needs (one that is the user's call
+   - approval → when the wake came through the `omp:job` relay, first read the request itself in
+     `omp-task status <id>` (the relay retypes the output and may garble a `PENDING:` line);
+     then `omp-task approve <id>` for what the brief needs (one that is the user's call
      goes to them like a question); `--same` when that exact
      command will come again, `--rule 'GLOB'` for a family of them (it must match this request);
      `--session` also allows every later call of **that same tool** for the rest of the job (a

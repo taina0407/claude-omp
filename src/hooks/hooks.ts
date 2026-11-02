@@ -7,6 +7,7 @@
  *                  points the subagentStatusLine shim at this plugin
  *   session-end    cancels the session's jobs when `on_session_end` is "cancel"
  *   stop-gate      opt-in: reviews uncommitted changes and blocks the stop on serious findings
+ *   relay-guard    PreToolUse: the omp:job relay may run `omp-task wait ...` and nothing else
  */
 import {
 	appendFileSync,
@@ -33,6 +34,10 @@ export interface HookInput {
 	cwd?: string;
 	stop_hook_active?: boolean;
 	reason?: string;
+	/** PreToolUse: set for a subagent's calls (`omp:job` for the relay), absent for the main thread. */
+	agent_type?: string;
+	tool_name?: string;
+	tool_input?: { command?: unknown };
 }
 
 export interface HookResult {
@@ -59,6 +64,8 @@ export async function runHook(name: string, input: HookInput): Promise<HookResul
 			return sessionEnd(input);
 		case "stop-gate":
 			return stopGate(input);
+		case "relay-guard":
+			return relayGuard(input);
 		default:
 			throw new Error(`unknown hook ${name}`);
 	}
@@ -100,6 +107,42 @@ export function writeStatuslineShim(root: string | undefined): void {
 	writeFileSync(tmp, text);
 	chmodSync(tmp, 0o755);
 	renameSync(tmp, file);
+}
+
+/** The agent type of the plugin's relay (agents/job.md). */
+export const RELAY_AGENT = "omp:job";
+
+/**
+ * The one command the relay may run: `omp-task wait` with plain words for arguments (ids, `--group
+ * NAME`, `--max-wait N`). No quotes, separators, substitutions or redirections can get through.
+ */
+const RELAY_COMMAND = /^\s*omp-task wait(?: +[\w.:=-]+)+\s*$/;
+
+/**
+ * Why the relay may not make this call, or null when it may (or the call is not the relay's).
+ * The relay reads text the worker controls, so its prompt alone cannot be what stops it from
+ * running `omp-task approve` or anything else.
+ */
+export function relayDenial(input: HookInput): string | null {
+	if (input.agent_type !== RELAY_AGENT) return null;
+	if (input.tool_name !== "Bash") return `the ${RELAY_AGENT} relay may only use Bash`;
+	const command = input.tool_input?.command;
+	if (typeof command === "string" && RELAY_COMMAND.test(command)) return null;
+	return `the ${RELAY_AGENT} relay may only run \`omp-task wait <id...> [--group NAME] [--max-wait N]\`; reply with the wait output instead`;
+}
+
+function relayGuard(input: HookInput): HookResult {
+	const reason = relayDenial(input);
+	if (!reason) return {};
+	return {
+		stdout: JSON.stringify({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: reason,
+			},
+		}),
+	};
 }
 
 async function sessionEnd(input: HookInput): Promise<HookResult> {
@@ -184,7 +227,8 @@ async function stopGate(input: HookInput): Promise<HookResult> {
 /** Entry point of `omp-task hook <name>`: never fails Claude's turn. */
 export async function hookMain(name: string | undefined): Promise<number> {
 	try {
-		if (!name) throw new Error("usage: omp-task hook <session-start|session-end|stop-gate>");
+		if (!name)
+			throw new Error("usage: omp-task hook <session-start|session-end|stop-gate|relay-guard>");
 		const raw = await Bun.stdin.text();
 		const input = (raw.trim() ? JSON.parse(raw) : {}) as HookInput;
 		const res = await runHook(name, input);

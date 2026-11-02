@@ -1,7 +1,8 @@
 /** The `supervise` setting: `omp-task mode` and the `next:` lines that tell Claude how to wait. */
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { nextSteps, waitTarget } from "../src/cli/main";
+import { join } from "node:path";
+import { nextSteps, waitFields, waitTarget } from "../src/cli/main";
 import { superviseMode } from "../src/core/config";
 import { Sandbox } from "./helpers";
 
@@ -51,6 +52,22 @@ describe("omp-task mode", () => {
 		expect(superviseMode(config())).toBe("subagent"); // a broken config falls back
 	});
 
+	test("replaces a wrong supervise value, but no other config error", async () => {
+		sb.writeConfig({ supervise: "sub", on_session_end: "keep" });
+		expect((await sb.cli(["mode"], [2])).stderr).toContain("supervise");
+		expect((await sb.cli(["mode", "subagent"])).stdout).toStartWith("supervise: subagent (");
+		expect(JSON.parse(readFileSync(config(), "utf8"))).toEqual({
+			supervise: "subagent",
+			on_session_end: "keep",
+		});
+		const broken = JSON.stringify({ supervise: "sub", on_session_end: "later" });
+		writeFileSync(config(), broken);
+		expect((await sb.cli(["mode", "bash"], [2])).stderr).toContain("on_session_end");
+		expect(readFileSync(config(), "utf8")).toBe(broken);
+		writeFileSync(config(), "[1]");
+		expect((await sb.cli(["mode", "bash"], [2])).stderr).toContain("not a JSON object");
+	});
+
 	test("an unknown value in the config is a config error", async () => {
 		sb.writeConfig({ supervise: "monitor" });
 		expect((await sb.cli(["mode"], [2])).stderr).toContain("supervise");
@@ -89,6 +106,68 @@ describe("next: lines", () => {
 		expect(nextSteps("subagent", grouped).join("\n")).toContain(
 			'description "omp group fan-1: its jobs", prompt "omp-task wait --group fan-1"',
 		);
+	});
+
+	test("a resumed job re-arms its relay, and starts one only if there is none", () => {
+		const lines = nextSteps("subagent", job, { resumed: true });
+		expect(lines[0]).toBe(
+			"next: re-arm the existing omp:job relay and end your turn (supervise: subagent):",
+		);
+		expect(lines.join("\n")).toContain(
+			'SendMessage to it, message "omp-task wait 20261103-170000-ab12". Only if there is none',
+		);
+		expect(lines.join("\n")).not.toContain("start the omp:job agent");
+		const grouped = nextSteps("subagent", { ...job, groupName: "fan-1" }, { resumed: true });
+		expect(grouped[0]).toContain("relay for the whole group");
+		expect(grouped.join("\n")).toContain('message "omp-task wait --group fan-1"');
+		expect(nextSteps("bash", { ...job, groupName: "fan-1" }, { resumed: true })[0]).toBe(
+			"next: run `omp-task wait --group fan-1` in the background and end your turn;",
+		);
+	});
+
+	test("JSON says whether the wait covers the job or its group", () => {
+		expect(waitFields("subagent", job)).toEqual({
+			supervise: "subagent",
+			wait_scope: "job",
+			wait: "omp-task wait 20261103-170000-ab12",
+			agent: {
+				description: "omp ab12: fix the flaky tests in auth [smol]",
+				prompt: "omp-task wait 20261103-170000-ab12",
+			},
+		});
+		expect(waitFields("bash", { ...job, groupName: "fan-1" })).toEqual({
+			supervise: "bash",
+			wait_scope: "group",
+			wait: "omp-task wait --group fan-1",
+		});
+	});
+
+	test("run -g and plan apply in JSON name the group's one relay", async () => {
+		const run = JSON.parse(
+			(await sb.cli(["run", "-d", "--json", "-g", "fan-2", "-a", "read", "hello"])).stdout,
+		);
+		expect(run.wait_scope).toBe("group");
+		expect(run.agent).toEqual({
+			description: "omp group fan-2: its jobs",
+			prompt: "omp-task wait --group fan-2",
+		});
+		const plan = join(sb.base, "plan.yaml");
+		writeFileSync(
+			plan,
+			"group: fan-3\ndefaults: { access: read }\ntasks:\n  - {name: a, prompt: hello}\n",
+		);
+		const applied = JSON.parse((await sb.cli(["plan", "apply", plan, "--json"])).stdout);
+		expect(applied.group).toBe("fan-3");
+		expect(applied.supervise).toBe("subagent");
+		expect(applied.wait_scope).toBe("group");
+		expect(applied.agent.prompt).toBe("omp-task wait --group fan-3");
+		writeFileSync(
+			plan,
+			"group: fan-4\ndefaults: { access: read }\ntasks:\n  - {name: a, prompt: hello}\n",
+		);
+		const text = (await sb.cli(["plan", "apply", plan])).stdout;
+		expect(text).toContain("next: start the omp:job agent for the whole group");
+		for (const g of ["fan-2", "fan-3", "fan-4"]) await sb.cli(["wait", "--group", g]);
 	});
 
 	test("run --detach prints the configured mode, as text and JSON", async () => {

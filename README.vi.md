@@ -213,6 +213,8 @@ SendMessage: nó chạy tiếp trong nền, vẫn là dòng cũ, và đánh th�
 chỉ khởi chạy agent mới khi việc đó thất bại (ví dụ sau khi phiên được tiếp tục) hoặc sau 20
 lần kích hoạt lại, vì mỗi vòng thêm khoảng 1 nghìn token vào ngữ cảnh của agent. Lần chuyển tiếp
 đầu tốn khoảng 8 nghìn token haiku (khoảng $0.001), mỗi lần kích hoạt lại $0.0004 đến $0.0008.
+Agent này đọc văn bản do worker kiểm soát, nên hook PreToolUse của plugin (`omp-task hook
+relay-guard`) chỉ cho agent `omp:job` chạy `omp-task wait`, không gì khác.
 
 - **Claude Code**: mỗi job một dòng trong bảng agent. `subagentStatusLine` của plugin
   (`omp-task statusline`, làm mới khoảng 5 giây một lần) thay chữ của dòng đó bằng, ví dụ,
@@ -230,7 +232,7 @@ Claude biết chế độ qua các dòng `next:` mà `run --detach` (và `contin
 `resume --detach`, `plan apply`) in ra; thay đổi áp dụng cho các job khởi chạy sau đó.
 
 Cài đặt của plugin không dùng được `${CLAUDE_PLUGIN_ROOT}`, nên hook SessionStart ghi
-`<thư mục trạng thái>/subagent-statusline`, một script hai dòng chạy `omp-task statusline` của
+`<thư mục trạng thái>/subagent-statusline`, một script nhỏ chạy `omp-task statusline` của
 plugin này, và `settings.json` của plugin chạy script đó. `subagentStatusLine` riêng của bạn
 trong cài đặt Claude Code được ưu tiên hơn của plugin; muốn giữ các dòng omp, cho script của
 bạn chuyển stdin của nó vào tệp đó và in cả hai đầu ra (mỗi dòng agent được trang trí là một
@@ -492,13 +494,14 @@ chứng nhận.
 
 | Biến | Mục đích |
 |---|---|
-| `OMP_TASK_HOME` | Thư mục trạng thái, gồm cơ sở dữ liệu, các job và worktree. |
+| `OMP_TASK_HOME` | Thư mục trạng thái, gồm cơ sở dữ liệu, các job và worktree. Phải là đường dẫn tuyệt đối hoặc `~/...`; giá trị khác bị từ chối. |
 | `OMP_TASK_CONFIG` | Đường dẫn tệp cấu hình người dùng. |
 | `OMP_TASK_OMP_BIN` | Đường dẫn hoặc tên chương trình thực thi. |
 | `OMP_TASK_DAEMON_IDLE` | Thời gian chờ không hoạt động của daemon, tính bằng giây. |
 
-`XDG_STATE_HOME` thay đổi thư mục gốc trạng thái mặc định; `XDG_RUNTIME_DIR` thay đổi vị trí
-socket. Daemon chạy lâu dài và kế thừa môi trường lúc khởi chạy: thay đổi biến trong shell
+`XDG_STATE_HOME` thay đổi thư mục gốc trạng thái mặc định (giá trị tương đối bị bỏ qua);
+`XDG_RUNTIME_DIR` thay đổi vị trí socket. Status line của bảng agent tìm script của nó theo cùng
+quy tắc, từ môi trường mà Claude Code được khởi động. Daemon chạy lâu dài và kế thừa môi trường lúc khởi chạy: thay đổi biến trong shell
 của máy khách mới không cấu hình lại tiến trình đang chạy.
 
 ## Cách hoạt động
@@ -525,7 +528,7 @@ worktree và nhật ký daemon. Các tệp lưu lại của job gồm lời nh�
 từ xa) thô (`events.jsonl`), kết quả và tài liệu kiểm tra. Chúng có thể chứa mã nguồn và
 ngữ cảnh tác vụ nhạy cảm; che thông tin nhạy cảm trước khi chia sẻ.
 
-SessionStart ghi lại ID phiên Claude và trỏ script status line tới plugin, SessionEnd có thể hủy các job của phiên theo cấu hình
+SessionStart ghi lại ID phiên Claude và trỏ script status line tới plugin, SessionEnd có thể hủy các job của phiên theo cấu hình, PreToolUse chỉ cho agent `omp:job` chạy `omp-task wait`,
 và Stop chạy cổng kiểm tra nếu đã bật. Job bị gián đoạn thường tiếp tục phiên omp đã lưu
 bằng `resume`; nếu omp chưa từng lưu phiên, tác vụ có thể khởi chạy lại thay thế. `continue`
 dùng để phản hồi về job đã hoàn tất và tạo bản ghi job mới.
@@ -549,8 +552,8 @@ sau có thể thay daemon khi chúng hoàn tất. Daemon cũng dừng sau thời
 
 `wait` có vẻ im lặng là bình thường: tiến độ thông thường không đánh thức lệnh này.
 `WAKE: <job> <lý do>` có nghĩa cần trả lời bằng `reply`, quyết định yêu cầu `approve`, xem checkpoint/tình trạng
-ngừng tiến triển hoặc dùng `resume JOB --detach` cho job bị gián đoạn; sau đó chạy lại đúng
-lệnh `wait` cũ. `watch JOB --verbose --last 40` in các sự kiện mới nhất rồi thoát, kể cả khi
+ngừng tiến triển hoặc dùng `resume JOB --detach` cho job bị gián đoạn; sau đó kích hoạt lại
+đúng lần chờ cũ (SendMessage tới agent `omp:job`, hoặc lại lệnh `wait` chạy nền ở chế độ `bash`). `watch JOB --verbose --last 40` in các sự kiện mới nhất rồi thoát, kể cả khi
 job còn chạy; `watch` thông thường theo dõi đến khi job kết thúc.
 
 Với job `queued`, dòng `queued:` của `run --detach` và `status` cho biết giới hạn nào hoặc

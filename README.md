@@ -204,6 +204,8 @@ re-arms the same agent with SendMessage: it resumes in the background as the sam
 Claude the same way. Claude starts a fresh agent only when that fails (for example after a
 resumed session) or after 20 re-arms, since each round adds about 1k tokens to the agent's
 context. The first relay costs about 8k haiku tokens (about $0.001), a re-arm $0.0004 to $0.0008.
+The relay reads text the worker controls, so the plugin's PreToolUse hook (`omp-task hook
+relay-guard`) lets the `omp:job` agent run `omp-task wait` and nothing else.
 
 - **Claude Code**: a row per job in the agent panel. The plugin's `subagentStatusLine`
   (`omp-task statusline`, refreshed about every 5 s) replaces that row's text with, for
@@ -222,7 +224,7 @@ background agents. Claude learns the mode from the `next:` lines that `run --det
 afterwards.
 
 Plugin settings cannot use `${CLAUDE_PLUGIN_ROOT}`, so the SessionStart hook writes
-`<state dir>/subagent-statusline`, a two-line script that runs this plugin's `omp-task
+`<state dir>/subagent-statusline`, a small script that runs this plugin's `omp-task
 statusline`, and the plugin's `settings.json` runs that script. Your own `subagentStatusLine`
 in Claude Code's settings takes precedence over the plugin's; to keep the omp rows, have your
 script pipe its stdin to that file as well and print both outputs (one JSON line per row it
@@ -464,12 +466,14 @@ provider resources; reaching the cap does not certify subsequent changes.
 
 | Variable | Purpose |
 |---|---|
-| `OMP_TASK_HOME` | State directory, including database, jobs, and worktrees. |
+| `OMP_TASK_HOME` | State directory, including database, jobs, and worktrees. An absolute path or `~/...`; anything else is refused. |
 | `OMP_TASK_CONFIG` | User configuration file path. |
 | `OMP_TASK_OMP_BIN` | Worker executable path or name. |
 | `OMP_TASK_DAEMON_IDLE` | Daemon idle timeout in seconds. |
 
-`XDG_STATE_HOME` changes the default state base; `XDG_RUNTIME_DIR` changes the socket location.
+`XDG_STATE_HOME` changes the default state base (a relative value is ignored); `XDG_RUNTIME_DIR`
+changes the socket location. The agent-panel status line finds its script with the same rules,
+from the environment Claude Code was started in.
 The daemon is long-lived and inherits its launch environment: changing a variable in a new
 client shell does not reconfigure the already-running process.
 
@@ -494,7 +498,7 @@ State defaults to `~/.local/state/claude-omp/`: `state.db`, `jobs/JOB/`, worktre
 logs. Job artifacts include prompts, raw RPC events (`events.jsonl`), results, and review
 material. They can contain source code and sensitive task context; redact before sharing.
 
-SessionStart records the Claude session ID and points the status-line script at the plugin, SessionEnd optionally cancels its jobs, and Stop
+SessionStart records the Claude session ID and points the status-line script at the plugin, SessionEnd optionally cancels its jobs, PreToolUse keeps the `omp:job` relay to `omp-task wait`, and Stop
 runs the opt-in review gate. Interrupted jobs normally resume their saved omp session using
 `resume`; if omp never saved the session, the task can restart instead. `continue` is for
 feedback on a finished job and creates a new job record.
@@ -518,7 +522,8 @@ it after they finish. The daemon also stops after its idle timeout.
 
 An apparently quiet `wait` is normal: routine progress does not wake it. `WAKE: <job> <reason>`
 means answer with `reply`, decide an `approve` request, inspect a checkpoint/stall, or
-`resume JOB --detach` an interrupted job; then re-run the same `wait`. `watch JOB --verbose
+`resume JOB --detach` an interrupted job; then re-arm the same wait (SendMessage to the `omp:job`
+relay, or the same background `wait` in `bash` mode). `watch JOB --verbose
 --last 40` prints the latest events and exits, even while the job runs; a plain `watch` follows
 it until it ends.
 

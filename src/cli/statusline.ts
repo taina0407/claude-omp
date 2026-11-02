@@ -37,9 +37,28 @@ export type RowTarget = { kind: "job"; ref: string } | { kind: "group"; name: st
 const JOB_ROW = /^omp ([0-9a-f][\w-]{3,}):/;
 const GROUP_ROW = /^omp group ([^\s:]+):/;
 
-/** The job or group a subagent row relays, or null for any other row (left as it is). */
-export function rowTarget(task: StatusTask): RowTarget | null {
+/** Statuses of a relay that is still waiting; a finished relay's row keeps its own rendering. */
+const LIVE = new Set(["running", "pending"]);
+
+/** Whether `value` is a row Claude Code could have sent: an object with a string id. */
+function isTask(value: unknown): value is StatusTask {
+	if (typeof value !== "object" || value === null) return false;
+	const row = value as Record<string, unknown>;
+	if (typeof row.id !== "string") return false;
+	return ["agentType", "status", "description", "label"].every(
+		(k) => row[k] === undefined || row[k] === null || typeof row[k] === "string",
+	);
+}
+
+/**
+ * The job or group a subagent row relays, or null for any other row (left as it is): not a relay,
+ * not a row at all, or a relay that has finished (after a fresh relay took over, the job would
+ * otherwise show on two rows).
+ */
+export function rowTarget(task: unknown): RowTarget | null {
+	if (!isTask(task)) return null;
 	if (!task.agentType || !/(^|:)job$/.test(task.agentType)) return null;
+	if (task.status && !LIVE.has(task.status)) return null;
 	const text = (task.description || task.label || "").trim();
 	const group = GROUP_ROW.exec(text);
 	if (group?.[1]) return { kind: "group", name: group[1] };
@@ -128,11 +147,21 @@ function rowLabel(task: StatusTask): string {
 	return (task.description || task.label || "").replace(/\s*\[[^\]]*\]\s*$/, "").trim();
 }
 
-/** Cuts a line to the row's width. */
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** Cuts a line to the row's width, in terminal cells (CJK and emoji take two). */
 export function fit(line: string, columns: number | undefined): string {
 	const flat = line.replace(/\s+/g, " ").trim();
-	if (!columns || columns < 10 || flat.length <= columns) return flat;
-	return `${flat.slice(0, columns - 1)}…`;
+	if (!columns || columns < 10 || Bun.stringWidth(flat) <= columns) return flat;
+	let out = "";
+	let width = 0;
+	for (const { segment } of graphemes.segment(flat)) {
+		const w = Bun.stringWidth(segment);
+		if (width + w > columns - 1) break;
+		out += segment;
+		width += w;
+	}
+	return `${out}…`;
 }
 
 async function jobView(client: Client, ref: string, session: string | undefined): Promise<JobView> {
@@ -180,8 +209,9 @@ export async function statusLines(
 	client: Client,
 	now = Date.now(),
 ): Promise<string[]> {
-	const rows = (input.tasks ?? [])
-		.map((task) => ({ task, target: rowTarget(task) }))
+	const tasks: unknown[] = Array.isArray(input.tasks) ? input.tasks : [];
+	const rows = tasks
+		.map((task) => ({ task: task as StatusTask, target: rowTarget(task) }))
 		.filter((r): r is { task: StatusTask; target: RowTarget } => r.target !== null);
 	const lines = await Promise.all(
 		rows.map(async ({ task, target }) => {
@@ -204,7 +234,7 @@ export async function statuslineMain(): Promise<number> {
 	try {
 		const raw = await Bun.stdin.text();
 		const input = (raw.trim() ? JSON.parse(raw) : {}) as StatusInput;
-		if (!(input.tasks ?? []).some((t) => rowTarget(t))) return 0;
+		if (!Array.isArray(input?.tasks) || !input.tasks.some((t) => rowTarget(t))) return 0;
 		const work = (async () => {
 			const daemon = await existingDaemon(); // never start one for a status line
 			return daemon ? statusLines(input, daemon.client) : [];

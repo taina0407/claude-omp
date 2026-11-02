@@ -66,6 +66,18 @@ describe("rowTarget", () => {
 		expect(rowTarget({ id: "a", agentType: "other:jobs", description: "omp ab12: x" })).toBe(null);
 		expect(rowTarget({ id: "a", description: "omp ab12: x" })).toBe(null);
 	});
+
+	test("rows that are not rows, and finished relays, are left alone", () => {
+		const row = { id: "a", agentType: "omp:job", description: "omp ab12: x" };
+		for (const bad of [null, 3, "omp ab12: x", [], { ...row, id: 7 }, { ...row, description: 1 }]) {
+			expect(rowTarget(bad)).toBe(null);
+		}
+		expect(rowTarget({ ...row, status: "running" })).toEqual({ kind: "job", ref: "ab12" });
+		expect(rowTarget({ ...row, status: "pending" })).toEqual({ kind: "job", ref: "ab12" });
+		for (const status of ["completed", "failed", "killed", "stopped"]) {
+			expect(rowTarget({ ...row, status })).toBe(null);
+		}
+	});
 });
 
 describe("texts", () => {
@@ -130,5 +142,14 @@ describe("texts", () => {
 		expect(fit("a  b\nc", 80)).toBe("a b c");
 		expect(fit("x".repeat(30), 20)).toBe(`${"x".repeat(19)}…`);
 		expect(fit("x".repeat(30), undefined)).toBe("x".repeat(30));
+	});
+
+	test("fit measures terminal cells: CJK and emoji take two", () => {
+		const cjk = fit(`omp ab12: ${"修复测试".repeat(5)}`, 20);
+		expect(cjk).toBe("omp ab12: 修复测试…");
+		expect(Bun.stringWidth(cjk)).toBeLessThanOrEqual(20);
+		const emoji = fit(`${"🚀".repeat(15)}`, 20);
+		expect(emoji).toBe(`${"🚀".repeat(9)}…`);
+		expect(fit("修复", 20)).toBe("修复");
 	});
 });

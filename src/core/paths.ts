@@ -6,15 +6,30 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import PREAMBLE from "../prompts/worker-preamble.md" with { type: "text" };
+import { UsageError } from "./util";
 
 function expand(p: string): string {
 	return p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
 }
 
+/**
+ * The state dir: OMP_TASK_HOME (absolute, or `~/...`), else `$XDG_STATE_HOME/claude-omp` (a
+ * relative XDG_STATE_HOME is ignored, as the XDG spec says), else `~/.local/state/claude-omp`.
+ * The shell line of the plugin's settings.json follows the same rules: keep them in step.
+ */
 export function stateDir(): string {
 	const override = process.env.OMP_TASK_HOME;
-	if (override) return resolve(expand(override));
-	const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+	if (override) {
+		const dir = expand(override);
+		if (!isAbsolute(dir)) {
+			throw new UsageError(
+				`OMP_TASK_HOME must be an absolute path or start with ~/: '${override}'`,
+			);
+		}
+		return resolve(dir);
+	}
+	const xdg = process.env.XDG_STATE_HOME;
+	const base = xdg && isAbsolute(xdg) ? xdg : join(homedir(), ".local", "state");
 	return join(base, "claude-omp");
 }
 

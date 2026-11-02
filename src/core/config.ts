@@ -2,7 +2,8 @@
  * User config (`~/.config/claude-omp/config.json`): a `defaults` block applied to every run and
  * named `presets`.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { z } from "zod";
 import { configFile } from "./paths";
 import { UsageError } from "./util";
@@ -107,6 +108,31 @@ export function loadConfig(path = configFile()): Config {
 		throw new UsageError(`invalid config in ${path}: ${z.prettifyError(parsed.error)}`);
 	}
 	return parsed.data;
+}
+
+/**
+ * Sets `supervise` in the config file (creating a minimal one), keeping everything else as it is.
+ * A wrong `supervise` value is replaced; any other problem in the file is refused, unchanged.
+ */
+export function writeSupervise(mode: SuperviseMode, path = configFile()): void {
+	let raw: unknown = {};
+	if (existsSync(path)) {
+		try {
+			raw = JSON.parse(readFileSync(path, "utf8"));
+		} catch (e) {
+			throw new UsageError(`invalid JSON in ${path}: ${(e as Error).message}`);
+		}
+	}
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+		throw new UsageError(`invalid config in ${path}: not a JSON object`);
+	}
+	const next = { ...(raw as Record<string, unknown>), supervise: mode };
+	const parsed = configSchema.safeParse(next);
+	if (!parsed.success) {
+		throw new UsageError(`invalid config in ${path}: ${z.prettifyError(parsed.error)}`);
+	}
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
 }
 
 /** The configured supervise mode; the default when unset or the config does not load. */

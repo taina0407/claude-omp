@@ -30,8 +30,23 @@
   agent's exact description and prompt), and `--json` detached starts carry `supervise` and, for
   `subagent`, `agent: {description, prompt}`. Without the Agent tool or background agents, the
   skill falls back to the Bash wait.
-- Notices in `wait` output say "re-arm the same wait" for either mode (SendMessage to the relay,
-  or the background Bash command). A `-g` job's `next:`
+- **The relay can only wait.** A new PreToolUse hook (`omp-task hook relay-guard`) denies every
+  call of the `omp:job` agent other than `omp-task wait` with plain arguments, so text from the
+  worker cannot make it approve, reply or run anything; when the guard itself cannot run, the
+  call is refused. Other calls skip the hook's Bun start (a shell check for `omp:job` comes
+  first). The skill reads a request in `omp-task status` before
+  approving it from a relay wake.
+- Notices in `wait` output say how to re-arm for the configured mode (SendMessage to the relay,
+  or the background Bash command). `resume --detach` asks to re-arm the existing relay, and
+  start one only if there is none.
+- `--json` detached starts carry `wait_scope` (`job` or `group`) and `wait` (the command);
+  `plan apply --json` now carries `supervise`, `wait_scope`, `wait` and `agent` too.
+- `omp-task mode` replaces a wrong `supervise` value instead of refusing the file.
+- `OMP_TASK_HOME` must be absolute or start with `~/` (a relative one is refused), and a relative
+  `XDG_STATE_HOME` is ignored; the status line's shell line in `settings.json` follows the same
+  rules, `~/` included.
+- The status line validates each row on its own, leaves finished relays' rows alone, and cuts
+  rows by display width (CJK, emoji). A `-g` job's `next:`
   line asks for one wait for the whole group once all of its jobs are started.
 
 ## 1.5.0 (2026-11-03)
