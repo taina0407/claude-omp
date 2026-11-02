@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.5.0 (2026-11-03)
+
+Removes the Claude Code UI of 1.4 (the hooks module): read the first item before upgrading.
+
+- **No more omp UI of its own.** The band above the prompt, the `/omp-jobs` pane, toasts, the
+  `mcp__omp__ask_user` tool and its dialogs, `/omp-mode` and the `ui` config block are gone,
+  with the hidden commands behind them (`ui-state`, `ui-feed`, `await-ref`, `ui-mode`) and
+  `reply`/`approve --by user`/`--quiet`. Hosts that run Claude Code from outside (Orca, Claude
+  Desktop) never saw that UI. They track a session through Claude Code's hooks and flag it as
+  waiting on you only for a permission prompt, an elicitation or Claude's own question dialog.
+  An `ask_user` call therefore made a session look busy while it sat blocked on you, for up to
+  the request's 20 minutes, and held up Claude's handling of every other job meanwhile. A `ui`
+  block left in the config is ignored. Claude Code 2.1.91+ is enough again.
+- **`omp-task hold JOB --ref REF [--for 2h]`**: Claude puts a worker's question or approval to
+  you. `wait` no longer wakes for that item or shows it as `PENDING:`, and the item expires
+  after `--for` (default 2h) instead of the answer/approval timeout. While every open item of a
+  job is held, the job's `--timeout` clock stops, so a slow answer does not get the job killed.
+  `status` shows the item as `HELD`, and `status --json`/`wait --json` give `held_until`. Answer
+  it later with `reply`/`approve --ref` as usual. A hold does not survive a daemon restart.
+- The skill puts a request that is yours to you through the host's own means. It uses Claude's
+  question dialog (with the worker's options as written) when no other job is running, and
+  otherwise asks in its reply and ends the turn, so the other jobs keep waking it.
+- First answer wins, `--ref` when a job has several open items, and `RESOLVED:` for items a
+  rule or a timeout settled all work as before. The job database stays `omp-task/3`.
+
 ## 1.4.2 (2026-11-02)
 
 - **Concurrency is limited per Claude session, not across all of them.** The new

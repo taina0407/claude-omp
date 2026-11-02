@@ -42,7 +42,7 @@ import type {
 	ShellCall,
 	TerminalStatus,
 } from "./types";
-import { errorText, nowIso } from "./util";
+import { errorText, isoAt, nowIso } from "./util";
 
 /** Tools whose calls are worth a feed line: they change things or start sub-work. */
 const FEED_TOOLS = new Set(["write", "edit", "bash", "eval", "task"]);
@@ -74,7 +74,12 @@ interface LivePending {
 	since: number;
 	/** For a bash approval: the call it is for, when known (see core/policy.ts). */
 	shell?: ShellCall | undefined;
+	/** Set by `hold`: when the item, put to the user, expires instead of the usual timeout. */
+	heldUntil?: { at: number; iso: string } | undefined;
 }
+
+/** How long a held item waits for the user by default before it expires. */
+export const DEFAULT_HOLD_S = 2 * 3600;
 
 /** Replaces `{{result:<job>}}` with that job's final report (for jobs run `--after` it). */
 export function expandResults(text: string, store: Store): string {
@@ -117,6 +122,9 @@ export class JobRunner {
 	#abortDeadline: number | null = null;
 	#finished = false;
 	#started = performance.now();
+	/** Time every open item was held for the user (`hold`): the job's --timeout does not count it. */
+	#heldMs = 0;
+	#lastTick = performance.now();
 	/** Duration of earlier runs of this job (before an interruption). */
 	readonly #baseDurationS: number;
 	/** Where the worker and the git snapshots run: the worktree, or the user's cwd. */
@@ -575,8 +583,11 @@ export class JobRunner {
 	#onTick(): void {
 		if (this.#finished) return;
 		const now = performance.now();
+		const items = [...this.#pending.values()];
+		if (items.length && items.every((p) => p.heldUntil)) this.#heldMs += now - this.#lastTick;
+		this.#lastTick = now;
 		const timeout = this.#job.timeoutS;
-		if (timeout && !this.#abortReason && now - this.#started > timeout * 1000) {
+		if (timeout && !this.#abortReason && now - this.#started - this.#heldMs > timeout * 1000) {
 			this.#feed("timeout", `hit --timeout ${timeout}s; aborting`);
 			this.#abort("timeout");
 		}
@@ -615,10 +626,12 @@ export class JobRunner {
 			case "abort":
 				this.cancel();
 				return { ok: true };
+			case "hold":
+				return this.#hold(cmd.ref ?? null, cmd.holdS ?? DEFAULT_HOLD_S);
 			case "reply":
 			case "approve": {
 				const kind: PendingKind = cmd.kind === "reply" ? "question" : "approval";
-				const by = cmd.by ?? "claude";
+				const by = "claude";
 				const ref = cmd.ref ?? null;
 				const open = [...this.#pending.entries()].filter(([, p]) => p.kind === kind);
 				if (!ref && open.length > 1) {
@@ -646,7 +659,7 @@ export class JobRunner {
 				const [r, item] = match;
 				if (cmd.kind === "reply") {
 					const message = cmd.message ?? "";
-					this.#resolvePending(r, by, { answer: message, quiet: cmd.quiet === true });
+					this.#resolvePending(r, by, { answer: message });
 					this.#feed("answered", message.slice(0, 300), { ref: r, by });
 				} else {
 					const decision: ApprovalDecision = cmd.decision ?? "approve";
@@ -656,7 +669,7 @@ export class JobRunner {
 						const error = this.#addAllowRule(rule, item);
 						if (error) return { ok: false, error };
 					}
-					this.#resolvePending(r, by, { decision, rule: rule ?? null, quiet: cmd.quiet === true });
+					this.#resolvePending(r, by, { decision, rule: rule ?? null });
 					this.#feed(`approval-${decision}`, item.text.slice(0, 200), {
 						ref: r,
 						by,
@@ -668,6 +681,48 @@ export class JobRunner {
 			}
 		}
 		return { ok: false, error: `unknown command ${String(cmd.kind)}` };
+	}
+
+	/**
+	 * Marks an open item as put to the user: `wait` stops waking for it and it expires `holdS`
+	 * from now instead of after the answer/approval timeout. Holding again moves the deadline.
+	 */
+	#hold(ref: string | null, holdS: number): CommandResult {
+		const open = [...this.#pending.keys()];
+		if (!ref && open.length > 1) {
+			return {
+				ok: false,
+				code: "ref_required",
+				error: `${open.length} pending items; pick one with --ref: ${open.join(", ")}`,
+			};
+		}
+		const r = ref ?? open[0];
+		const item = r ? this.#pending.get(r) : undefined;
+		if (!r || !item) {
+			const resolved = ref ? this.#store.getResolved(this.#jobId, ref) : null;
+			if (resolved) {
+				return {
+					ok: false,
+					code: "already_resolved",
+					error: `${resolved.kind} ${ref} was already settled by ${resolved.by}`,
+					resolved,
+				};
+			}
+			return { ok: false, error: `no pending item${ref ? ` with ref ${ref}` : ""}` };
+		}
+		const at = performance.now() + holdS * 1000;
+		item.heldUntil = { at, iso: isoAt(new Date(Date.now() + holdS * 1000)) };
+		// The orchestrator has seen it (maybe through `status`): its expiry is reported as RESOLVED:.
+		this.#store.markDelivered(this.#jobId, [r]);
+		this.#feed("held", `${item.kind} ${r} put to the user`, { ref: r, until: item.heldUntil.iso });
+		return { ok: true, ref: r };
+	}
+
+	/** Open items `hold` put to the user → when each expires (ISO time). */
+	held(): Map<string, string> {
+		const out = new Map<string, string>();
+		for (const [ref, item] of this.#pending) if (item.heldUntil) out.set(ref, item.heldUntil.iso);
+		return out;
 	}
 
 	/** The job's rules and directories, as core/policy.ts takes them. */
@@ -731,26 +786,23 @@ export class JobRunner {
 	#resolvePending(
 		ref: string,
 		by: ResolvedBy,
-		how: { answer?: string; decision?: ApprovalDecision; rule?: string | null; quiet?: boolean },
+		how: { answer?: string; decision?: ApprovalDecision; rule?: string | null },
 	): void {
 		const item = this.#pending.get(ref);
 		if (!item) return;
 		this.#pending.delete(ref);
 		const answer = how.answer ?? "";
 		const decision = how.decision ?? "deny";
-		this.#store.resolvePending(
-			{
-				jobId: this.#jobId,
-				ref,
-				kind: item.kind,
-				by,
-				decision: item.kind === "approval" ? decision : null,
-				rule: item.kind === "approval" ? (how.rule ?? null) : null,
-				answerPreview: item.kind === "question" ? answer.slice(0, ANSWER_PREVIEW_CHARS) : null,
-				resolvedAt: nowIso(),
-			},
-			how.quiet === true,
-		);
+		this.#store.resolvePending({
+			jobId: this.#jobId,
+			ref,
+			kind: item.kind,
+			by,
+			decision: item.kind === "approval" ? decision : null,
+			rule: item.kind === "approval" ? (how.rule ?? null) : null,
+			answerPreview: item.kind === "question" ? answer.slice(0, ANSWER_PREVIEW_CHARS) : null,
+			resolvedAt: nowIso(),
+		});
 		if (item.kind === "question") this.#session?.answer(ref, answer);
 		else {
 			if (decision === "deny" && item.tool) this.#denied.add(item.tool);
@@ -765,8 +817,12 @@ export class JobRunner {
 			approval: this.#job.approvalTimeoutS,
 		};
 		for (const [ref, item] of this.#pending) {
-			const limit = limits[item.kind];
-			if (!limit || now - item.since <= limit * 1000) continue;
+			if (item.heldUntil) {
+				if (now <= item.heldUntil.at) continue;
+			} else {
+				const limit = limits[item.kind];
+				if (!limit || now - item.since <= limit * 1000) continue;
+			}
 			if (item.kind === "question") {
 				this.#resolvePending(ref, "expired", { answer: QUESTION_EXPIRED_ANSWER });
 			} else this.#resolvePending(ref, "expired", { decision: "deny" });

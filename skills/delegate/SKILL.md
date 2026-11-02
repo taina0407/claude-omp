@@ -63,14 +63,11 @@ when it needs this conversation's nuance, touches files you are editing, or is a
 4. **Start**: `omp-task run --detach --brief <file> -m <model> -a <access> [--isolate worktree]
    [--allow ...] [--budget 0.50]`, then the background `wait`.
 5. **When woken**, the job block above `WAKE:` shows what is needed and the exact command:
-   - question → `omp-task reply <id> "<answer>"`. When it is the user's to decide, call the
-     `mcp__omp__ask_user` tool with `job` and `ref` from its `PENDING:` line (and an optional
-     one-line `note`) **before** you re-arm the `wait`; never build an AskUserQuestion for a
-     worker's question yourself. Its one-line result: `answered by user` or `already_resolved`
-     → just re-arm; `dismissed` → decide yourself or leave it to expire; `expired`/`gone` →
-     nothing to do. Without that tool (no interactive UI), decide yourself or ask in words;
+   - question → `omp-task reply <id> "<answer>"`. Decide it yourself when the brief, the code
+     or the conversation settles it; one that is the user's call goes to them (see "Putting an
+     item to the user" below);
    - approval → `omp-task approve <id>` for what the brief needs (one that is the user's call
-     goes to `mcp__omp__ask_user` like a question, which opens the approval dialog); `--same` when that exact
+     goes to them like a question); `--same` when that exact
      command will come again, `--rule 'GLOB'` for a family of them (it must match this request);
      `--session` also allows every later call of **that same tool** for the rest of the job (a
      request for another tool still asks); `--deny` for anything destructive, out of scope or
@@ -90,10 +87,7 @@ when it needs this conversation's nuance, touches files you are editing, or is a
    - interrupted (the daemon restarted) → `omp-task resume <id> --detach` (without `--detach`
      it blocks until the job ends or needs you).
    Then re-arm the same `wait` in the background. Unanswered items expire after 20m (questions continue
-   on an assumption, approvals are denied). The user sees the jobs above the prompt and in
-   `/omp-jobs`, and may answer an item there first. If they chose the `user` mode
-   (`/omp-mode`), questions and approvals go to them, not to you: a job sitting in `waiting`
-   is normal then.
+   on an assumption, approvals are denied).
 6. **Review. Never skip it.** `wait` shows the first 40 lines of the report; `omp-task result
    <id> --full` has the rest. The report is a claim. Read the real changes: for a checkout job
    `git status --short` (new files are untracked) and `git diff HEAD -- <files>`; for a worktree
@@ -120,6 +114,37 @@ when it needs this conversation's nuance, touches files you are editing, or is a
    user's checkout: use it only after a plain apply failed, then resolve them.
 9. **Report** to the user: what was delegated to which model, what you answered, what changed,
    what you verified, cost, anything open. Do not commit unless asked.
+
+
+## Putting an item to the user
+
+You are the only one who talks to the user; omp has no UI of its own. Ask in the host's own
+ways, which Claude Code, Claude Desktop and Orca (desktop and mobile) all show and flag as
+waiting on the user:
+
+1. `omp-task hold <id> --ref <ref>` first: `wait` stops waking for that item, it expires
+   after 2h (`--for 45m`, ...) instead of the usual 20m, and while every open item of the job
+   is held its `--timeout` clock stops. Then re-arm the `wait` for the other jobs. A held item
+   that expires does not wake `wait`; the next wake reports it as `RESOLVED: ... by expired`.
+2. Ask:
+   - **No job other than this one is running, and the worker gave 2-4 options**: the
+     AskUserQuestion tool, one question, one option per worker option (no options of your
+     own; the user can still type an answer). A short label; the worker's full text as the
+     option's description when the label had to shorten it. Put the job and what hangs on the
+     choice in the question.
+   - **Otherwise** (other jobs still running, no or many options, a long approval): write the
+     question in your reply and end your turn; the user answers in their next message.
+3. Relay faithfully: `omp-task reply <id> --ref <ref> "<the worker's full option text, or what
+   the user wrote>"`, or the `approve` flags that match what they chose. If the answer is
+   unclear, ask again rather than guess. Never send an answer the user did not give (a dialog
+   that closed by itself, an assumption of yours): leave the item to expire instead.
+4. Exit 2 with `already ... by its timeout`: the item expired and the job went on (an
+   assumption, or a denied call); tell the user and `omp-task steer` it with their answer if
+   it still matters. `by the job's end` (cancelled, timed out, over budget): tell the user;
+   `omp-task continue <id>` with their answer if it still matters.
+5. Interrupted meanwhile (the daemon restarted): the hold is gone with the job's open items.
+   `omp-task resume <id> --detach`; if the worker asks the same thing again, `hold` it again
+   and do not ask the user twice: reply with their answer once they give it.
 
 ## Several tasks
 

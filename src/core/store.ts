@@ -466,14 +466,13 @@ export class Store {
 	 * Removes a pending item and records how it was settled. When `wait` had reported it and
 	 * someone other than the orchestrator settled it, the next `wait` reports that once.
 	 */
-	resolvePending(r: ResolvedItem, quiet = false): void {
+	resolvePending(r: ResolvedItem): void {
 		this.db.transaction(() => {
 			const row = this.db
 				.query("SELECT delivered FROM pending WHERE job_id = ? AND ref = ?")
 				.get(r.jobId, r.ref) as { delivered: number } | null;
 			this.db.query("DELETE FROM pending WHERE job_id = ? AND ref = ?").run(r.jobId, r.ref);
-			const report =
-				!quiet && row?.delivered === 1 && r.by !== "claude" && r.by !== "aborted" ? 1 : 0;
+			const report = row?.delivered === 1 && r.by !== "claude" && r.by !== "aborted" ? 1 : 0;
 			this.db
 				.query(
 					`INSERT OR REPLACE INTO resolved_pending

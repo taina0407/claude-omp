@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
-import type { FeedEvent, Health, UiStreamEvent } from "../api/schema";
+import type { FeedEvent, Health } from "../api/schema";
 import { detachedEnv } from "../core/env";
 import { cliCommand, socketPath, stateDir } from "../core/paths";
 import { UsageError } from "../core/util";
@@ -65,12 +65,6 @@ export class Client {
 			follow: follow ? "1" : "0",
 		});
 		return this.#events<FeedEvent>(`/v1/feed?${q}`);
-	}
-
-	/** Streams GET /v1/ui/stream for a Claude session: a token, snapshots, then end. */
-	uiStream(session: string, recentS: number): AsyncGenerator<UiStreamEvent> {
-		const q = new URLSearchParams({ session, recent: String(recentS) });
-		return this.#events<UiStreamEvent>(`/v1/ui/stream?${q}`);
 	}
 
 	/** The `data` of each server-sent event of a GET request, parsed as JSON. */

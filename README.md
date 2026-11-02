@@ -37,9 +37,9 @@ You → Claude ── brief / answers / approvals ──→ omp-task
   budgets coordinate independent or ordered jobs.
 - **Structured reviews.** Standard and adversarial reviewers return validated findings. An
   optional Stop hook can review changes before Claude finishes a turn.
-- **Live view in Claude Code.** A band above the prompt and an `/omp-jobs` pane show this
-  session's jobs as they run; a worker's question or approval that is yours to decide opens in
-  Claude Code's own dialog.
+- **Questions that are yours reach you where you already look.** Claude asks you with the
+  host's own question dialog or in its reply, so Claude Code, Claude Desktop and Orca show the
+  session as waiting on you; `omp-task hold` keeps the worker's request open meanwhile.
 - **Persistent jobs.** Inspect saved results, resume interrupted jobs, or continue a finished
   job's omp session with specific feedback.
 
@@ -47,8 +47,8 @@ You → Claude ── brief / answers / approvals ──→ omp-task
 
 ### Requirements
 
-- [Claude Code](https://code.claude.com) **2.1.316+**: plugin `bin/` on the Bash tool's PATH
-  and the plugin hooks module behind the band, the pane and the dialogs.
+- [Claude Code](https://code.claude.com) **2.1.91+** for plugin `bin/` support on the Bash
+  tool's PATH.
 - [Bun](https://bun.sh) **1.3+**, or a matching release binary for `omp-task`. Upstream omp
   still needs its own working installation.
 - `omp` **18.12+** on PATH with an authenticated provider. Follow the
@@ -182,45 +182,28 @@ Ask in plain words or invoke a namespaced command. `delegate` is a
 | `/omp:cancel JOB` | Cancel a job; unsuccessful dependencies cause dependent jobs to be skipped by default. |
 | `/omp:transfer` | Print the command for continuing this transcript in interactive omp. |
 | `/omp:setup [--stop-gate on\|off]` | Create missing config, print diagnostics, and optionally toggle the Stop gate. |
-| `/omp-jobs` | Open the jobs pane (from the plugin's hooks module). |
-| `/omp-mode [claude\|both\|user\|default]` | Who decides the workers' questions and approvals in this session. |
 
 Review commands report findings without changing code. Claude checks the cited scenarios;
 findings remain claims to evaluate, not instructions to follow. The Stop gate is off unless
 you enable it.
 
-## Jobs in Claude Code's UI
+## Questions and approvals that are yours
 
-The plugin's hooks module ([hooks/register.tsx](hooks/register.tsx)) shows the jobs of the
-current Claude Code session; jobs of other sessions, or started from a terminal, are not shown.
+Claude answers the workers by default. When a question or an approval is yours to decide, Claude
+puts it to you with the host's own means, which Claude Code, Claude Desktop and Orca (desktop and
+mobile) all show and flag as waiting on you; omp has no UI of its own.
 
-- **Band** above the prompt: `omp ▸ 2 running · 1 queued · ⚠ 1 needs you · $0.42`, with
-  `[Jobs]` and `[Hide]`. Yellow when something waits on you, red when a job failed recently.
-- **`/omp-jobs` pane**: status, model, access, time, cost, latest activity and open requests of
-  each job, with `[Review]` (open a request), `[Cancel]` (asks first) and `[Details]`
-  (`omp-task status`). Applying, discarding and continuing stay with Claude.
-- **Toasts** when a job ends, and a native **notification** when one fails or needs you.
+1. `omp-task hold JOB --ref REF`: `wait` no longer wakes for that item, and it expires after 2h
+   (`--for`) instead of the usual 20m. While every open item of the job is held, its
+   `--timeout` clock stops. Claude keeps waiting for the other jobs.
+2. With no other job running and 2-4 short options from the worker, Claude asks with the
+   question dialog, the worker's options as written; otherwise it writes the question in its
+   reply and ends the turn, so other jobs keep it busy and you answer in your next message.
+3. Claude sends your answer with `reply`/`approve --ref REF`: one of the worker's options as it
+   wrote it, or what you wrote. An answer you did not give is never sent.
 
-**Who decides.** By default Claude answers the workers (`claude` mode). When a request is yours,
-Claude calls the plugin's `ask_user` tool: a question with 2-4 options opens Claude Code's
-question dialog, anything else (and every approval) opens a dialog pane. What is sent to the
-worker is always one of its own options as it wrote it, or the text you typed; an answer the
-dialog gives by itself while you are away is never sent. `/omp-mode both` also opens the dialog
-for every new request while Claude is woken as usual; `/omp-mode user` hands requests to you
-alone (Claude is not woken for them while the UI is connected, and gets them back as soon as
-it is not). `/omp-mode default` returns to the config's `ui.decider`. The first answer wins:
-Claude's late `reply`/`approve` exits 2 with `already ... by the user`.
-
-The approval dialog maps each button to one CLI call: Allow once (`a`), Allow this exact
-command (`s`), Allow rule… (`r`, prefilled with the command's prefix), Allow the tool for the
-session (`t`), Deny (`d`) and Deny with message… (`m`: denies, then steers the worker). A rule
-the daemon refuses keeps the dialog open with its words. On a narrow terminal the dialog does
-not open by itself: the band shows `[Review]` and you get a notification.
-
-The UI talks to the daemon only through `omp-task` (hidden commands `ui-state`, `ui-feed`,
-`await-ref`, `ui-mode`); its stream ends with the session's last active job, so it never keeps
-an idle daemon alive. Only that stream's token lets a call count as the user's (`--by user`).
-Headless runs (`claude -p`, the SDK) draw nothing and keep Claude as the only decider.
+The first answer wins: a second `reply`/`approve` for the same item exits 2 with `already ...`
+(also when the item expired meanwhile). `omp-task status JOB` lists held items as `HELD`.
 
 ## CLI reference
 
@@ -247,6 +230,7 @@ turn; terminal users can wait in the foreground. Do not poll status to emulate w
 | `run [text]`, `continue JOB [text]`, `resume JOB` | Start; create a new job using a finished job's session; resume an interrupted job under its existing ID. |
 | `wait JOB…`, `wait --group NAME`, `watch JOB…` | Wait for attention/completion, or stream events. |
 | `reply JOB TEXT`, `approve JOB [--same\|--rule GLOB\|--session\|--deny]`, `steer JOB TEXT`, `cancel JOB` | Answer, approve/deny, redirect, or abort. |
+| `hold JOB --ref REF [--for 2h]` | Mark a request as put to the user: `wait` stops waking for it; it expires after `--for`. |
 | `status JOB`, `status --group NAME`, `result JOB [--full]`, `list [-C DIR] [--group NAME]`, `summary NAME` | Inspect state, reports, recent jobs, and group spending. |
 | `doctor`, `setup`, `daemon [status\|stop]`, `hook NAME`, `install-binary` | Diagnostics, configuration, daemon control, plugin hooks, and binary installation. |
 
@@ -418,10 +402,6 @@ retention deletion. Jobs owning worktrees are retained until those worktrees are
 that omp repeats in every streamed `message_update` (the deltas stay), `full` keeps every frame
 as sent (it can reach gigabytes for long replies), and `off` writes no event log.
 
-`ui` sets the Claude Code UI: `decider` (`claude`, `both` or `user`; default `claude`),
-`notify` (native notifications; default `true`), `band` (`auto`: while the session has jobs,
-`always`, or `off`) and `recent` (how long finished jobs stay listed; default `10m`).
-
 The optional `stop_gate` defaults to model `smol`, timeout `3m`, minimum severity `high`, and
 at most 3 review attempts per Claude session. Enable it with `/omp:setup --stop-gate on`;
 use `off` to disable it. It skips an unchanged diff and recursive Stop hooks. **It fails open:**
@@ -521,12 +501,7 @@ bun run check
 claude plugin validate . --strict
 ```
 
-```bash
-bun run test:mod
-```
-
-`check` runs TypeScript checking, Biome, and the test suite. `test:mod` runs the hooks
-module's tests ([hooks/register.test.tsx](hooks/register.test.tsx)) with `claude plugin test`. Ordinary tests drive the real CLI
+`check` runs TypeScript checking, Biome, and the test suite. Ordinary tests drive the real CLI
 and daemon against fake omp and replay recorded RPC fixtures, so they need no provider access.
 Real-provider contract tests are skipped unless explicitly enabled.
 

@@ -33,6 +33,7 @@ function pendingJson(p: Pending) {
 		options: p.options,
 		context: p.context,
 		asked_at: p.askedAt,
+		...(p.heldUntil ? { held_until: p.heldUntil } : {}),
 	};
 }
 
@@ -93,14 +94,21 @@ export function jobJson(job: Job, pending: Pending[], full = false, shellReads =
 
 export function printPending(jobId: string, pending: Pending[]): void {
 	for (const p of pending) {
+		if (p.heldUntil) {
+			const what = p.kind === "question" ? "question" : `approval ${p.tool}`;
+			out(`HELD for the user (ref ${p.ref}, expires ${p.heldUntil}): ${what}: ${p.text}`);
+			continue;
+		}
 		if (p.kind === "question") {
 			out(`QUESTION from worker (ref ${p.ref}): ${p.text}`);
 			if (p.context) out(`  context: ${p.context}`);
 			for (const o of p.options) out(`  - option: ${o}`);
-			out(`  answer:  omp-task reply ${jobId} "<answer>"`);
+			out(`  answer:  omp-task reply ${jobId} --ref ${p.ref} "<answer>"`);
 		} else {
 			out(`APPROVAL needed (ref ${p.ref}): ${p.tool} — ${p.text}`);
-			out(`  decide:  omp-task approve ${jobId} [--same | --rule GLOB | --session | --deny]`);
+			out(
+				`  decide:  omp-task approve ${jobId} --ref ${p.ref} [--same | --rule GLOB | --session | --deny]`,
+			);
 		}
 	}
 }

@@ -147,6 +147,11 @@ export interface Pending {
 	options: string[];
 	context: string | null;
 	askedAt: string;
+	/**
+	 * Set by `hold`: the orchestrator put this item to the user. `wait` does not wake for it, and
+	 * it expires at this time instead of after the answer/approval timeout. Live jobs only.
+	 */
+	heldUntil?: string;
 }
 
 export interface FeedEntry {
@@ -166,13 +171,13 @@ export interface ShellCall {
 	env: boolean;
 }
 
-export type ControlKind = "steer" | "abort" | "reply" | "approve";
+export type ControlKind = "steer" | "abort" | "reply" | "approve" | "hold";
 export type ApprovalDecision = "approve" | "session" | "deny";
 
-/** Who settled a question or approval: the orchestrator, the user (through the UI), an allow/deny
- * rule, the answer/approval timeout, or the job's end (cancel, timeout, budget). */
+/** Who settled a question or approval: the orchestrator, an allow/deny rule, the answer/approval
+ * timeout, or the job's end (cancel, timeout, budget). `user` appears only in the history of 1.4,
+ * whose Claude Code UI answered as the user. */
 export type ResolvedBy = "claude" | "user" | "rule" | "expired" | "aborted";
-export type AnsweredBy = "claude" | "user";
 
 /** A question or approval that is no longer pending, and how it was settled. */
 export interface ResolvedItem {
@@ -191,8 +196,6 @@ export interface ResolvedItem {
 
 export interface ControlRequest {
 	kind: ControlKind;
-	/** reply/approve: who answers (default claude); `user` needs the UI's token (checked by the daemon). */
-	by?: AnsweredBy | undefined;
 	message?: string | undefined;
 	ref?: string | null | undefined;
 	decision?: ApprovalDecision | undefined;
@@ -200,15 +203,12 @@ export interface ControlRequest {
 	rule?: string | undefined;
 	/** approve: also add a rule matching exactly this request's command. */
 	same?: boolean | undefined;
-	/**
-	 * reply/approve by the user: Claude already learns the outcome another way (the UI's ask_user
-	 * result), so the next `wait` does not report it as RESOLVED.
-	 */
-	quiet?: boolean | undefined;
+	/** hold: how long the item may wait for the user before it expires (default 2h). */
+	holdS?: number | undefined;
 }
 
 /** Why a control request was refused, for callers that act on it (the CLI exits 2 on these). */
-export type ControlErrorCode = "already_resolved" | "ref_required" | "ui_token_required";
+export type ControlErrorCode = "already_resolved" | "ref_required";
 
 export interface CommandResult {
 	ok: boolean;
