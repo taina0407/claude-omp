@@ -7,7 +7,8 @@
  *                  points the subagentStatusLine shim at this plugin
  *   session-end    cancels the session's jobs when `on_session_end` is "cancel"
  *   stop-gate      opt-in: reviews uncommitted changes and blocks the stop on serious findings
- *   relay-guard    PreToolUse: the omp:job relay may run `omp-task wait ...` and nothing else
+ *   relay-guard    PreToolUse: the omp:job relay may run `omp-task wait ...` (and hand its
+ *                  result back) and nothing else
  */
 import {
 	appendFileSync,
@@ -113,6 +114,13 @@ export function writeStatuslineShim(root: string | undefined): void {
 export const RELAY_AGENT = "omp:job";
 
 /**
+ * Tools Claude Code itself gives a background agent to hand its result back (SubagentHandback,
+ * Claude Code 2.1.3xx). They carry text to the main thread and run nothing; deny them and the
+ * main thread gets "no report was delivered" instead of the wait output.
+ */
+const RELAY_HANDBACK_TOOLS = new Set(["SubagentHandback"]);
+
+/**
  * The one command the relay may run: `omp-task wait` with plain words for arguments (ids, `--group
  * NAME`, `--max-wait N`). No quotes, separators, substitutions or redirections can get through.
  */
@@ -125,6 +133,7 @@ const RELAY_COMMAND = /^\s*omp-task wait(?: +[\w.:=-]+)+\s*$/;
  */
 export function relayDenial(input: HookInput): string | null {
 	if (input.agent_type !== RELAY_AGENT) return null;
+	if (input.tool_name && RELAY_HANDBACK_TOOLS.has(input.tool_name)) return null;
 	if (input.tool_name !== "Bash") return `the ${RELAY_AGENT} relay may only use Bash`;
 	const command = input.tool_input?.command;
 	if (typeof command === "string" && RELAY_COMMAND.test(command)) return null;

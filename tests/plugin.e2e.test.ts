@@ -122,6 +122,9 @@ describe("relay guard", () => {
 			expect(r.deny).toContain("may only run `omp-task wait");
 		}
 		expect((await guard(relay("x", "Write"))).deny).toContain("may only use Bash");
+		// Claude Code's own tool for handing a background agent's result back must get through.
+		const handback = { ...relay("x", "SubagentHandback"), tool_input: { message: "WAKE: x" } };
+		expect(await guard(handback)).toEqual({ code: 0, deny: null });
 	});
 
 	test("a guard that cannot run refuses the relay's call", async () => {

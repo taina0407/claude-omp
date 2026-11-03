@@ -43,7 +43,9 @@ interrupted job. How you arm it is the `supervise` setting (`/omp:mode`); never 
   completed)`. `wait` exits 0 both when every job completed and when one needs you; 1 means a
   job failed, was cancelled, timed out, was skipped or went over budget. A relay result that
   starts with `RELAY-ERROR:` means `wait` itself failed (exit 5: the daemon; exit 2: a bad id):
-  fix that, then arm the wait again.
+  fix that, then arm the wait again. A relay result with neither (for example "no report was
+  delivered") tells you nothing about the jobs: run the same `omp-task wait ...` yourself in the
+  foreground with `--max-wait 1` to read their state, act on it, then re-arm the relay.
 - Never poll, sleep-loop, or check "how it is going". Do not put `omp-task watch` on Monitor
   unless the user asks for a live view; piped, it prints only the same attention lines anyway.
 - After you answer or approve, **re-arm the same wait** in the same turn, so the other jobs keep
