@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.1 (2026-11-03)
+
+- **Fix: the `omp:job` relay can hand its result back again.** Claude Code 2.1.3xx gives some
+  background agents a `SubagentHandback` tool, and only a call to it delivers the agent's result.
+  The 1.6.0 relay guard denied every tool but Bash, so the main thread got "no report was
+  delivered" instead of the wait output and kept re-arming without seeing `PENDING:` lines. The
+  guard now lets `SubagentHandback` through, the relay is told to use it when it has it, and the
+  delegate skill falls back to a foreground `omp-task wait ... --max-wait 1` when a relay result
+  carries neither `WAKE:` nor `RELAY-ERROR:`.
+
 ## 1.6.0 (2026-11-03)
 
 - **Each job is a row in the agent panel.** Claude now waits on a job through the plugin's new
