@@ -57,6 +57,10 @@ interrupted job. How you arm it is the `supervise` setting (`/omp:mode`); never 
     and prompt instead only when SendMessage fails (the agent is gone, the session was resumed)
     or after you re-armed that agent 20 times (each round adds about 1k tokens to its context).
   - Bash: the same background Bash command.
+- Re-arm **once per turn**, as the turn's last call, after every reply, approve and check is
+  done. A wait you armed earlier in the same turn is still running: never arm a second one for
+  the same ids or group. Two waits on one job both return on the next wake, and each sends you an
+  extra turn.
 - One wait per job you started on its own, one per group (`-g`, `plan apply`): a group wait
   wakes you once when all of its jobs are done instead of once per job.
 - In `claude -p` and the Agent SDK, background agents still running 10 minutes after your last
@@ -119,7 +123,7 @@ when it needs this conversation's nuance, touches files you are editing, or is a
      plain `watch` follows a running job until it ends), then steer or `omp-task cancel <id>`;
    - interrupted (the daemon restarted) → `omp-task resume <id> --detach` (without `--detach`
      it blocks until the job ends or needs you).
-   Then re-arm the same wait (SendMessage to the relay, or the background Bash). Unanswered items expire after 20m (questions continue
+   Then re-arm the same wait, once, as your last call (SendMessage to the relay, or the background Bash). Unanswered items expire after 20m (questions continue
    on an assumption, approvals are denied).
 6. **Review. Never skip it.** `wait` shows the first 40 lines of the report; `omp-task result
    <id> --full` has the rest. The report is a claim. Read the real changes: for a checkout job

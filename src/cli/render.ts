@@ -178,8 +178,8 @@ function printNotices(jobId: string, notices: Notice[]): void {
 	}
 	out(
 		superviseMode() === "bash"
-			? "  then:   re-arm the same wait (same ids or --group) as a background `omp-task wait`"
-			: "  then:   re-arm the same wait (same ids or --group): SendMessage it to the omp:job relay that woke you",
+			? "  then:   re-arm the same wait (same ids or --group) once, as your last call: a background `omp-task wait`"
+			: "  then:   re-arm the same wait (same ids or --group) once, as your last call: SendMessage it to the omp:job relay that woke you",
 	);
 }
 
