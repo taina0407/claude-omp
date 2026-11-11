@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.2 (2026-11-11)
+
+- **Fewer extra wake turns.** Claude sometimes armed the same `omp-task wait` twice in one turn
+  (about 5% of wake turns in recent sessions). Both waits returned on the next wake, so each
+  duplicate cost a turn and, in Orca, another status change. The delegate skill and the `then:`
+  hint that `wait` prints now say to re-arm once per turn, as the last call, after every reply
+  and approve.
+
 ## 1.6.1 (2026-11-03)
 
 - **Fix: the `omp:job` relay can hand its result back again.** Claude Code 2.1.3xx gives some
