@@ -4,12 +4,12 @@
 
 `--model` is passed straight to omp, so it accepts anything `omp --model` does:
 
-| Value                                                                      | Meaning                                                                                                                         |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Value | Meaning |
+| --- | --- |
 | a role: `default`, `smol`, `slow`, `plan`, `task`, `designer`, `vision`, … | Whatever that role is bound to in the user's `~/.omp/agent/config.yml` (`modelRoles`). Portable across machines — prefer these. |
-| a fuzzy name: `opus`, `gpt-6-luna`, `deepseek`                             | First matching model omp knows about.                                                                                           |
-| an exact id: `openai/gpt-6-luna`, `opencode-go/deepseek-v4.1-flash:high`   | That model; a `:level` suffix sets thinking.                                                                                    |
-| omitted                                                                    | The preset's or the config `defaults.model`, else omp's `default` role.                                                         |
+| a fuzzy name: `opus`, `gpt-6-luna`, `deepseek` | First matching model omp knows about. |
+| an exact id: `openai/gpt-6-luna`, `opencode-go/deepseek-v4.1-flash:high` | That model; a `:level` suffix sets thinking. |
+| omitted | The preset's or the config `defaults.model`, else omp's `default` role. |
 
 See what this machine has with `omp models` (providers and ids) and
 `omp config get modelRoles` (role bindings).
@@ -29,11 +29,11 @@ the presets.
 
 ## Access levels
 
-| `--access`       | omp flags                                                                                                 | Use for                                                                                |
-| ---------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `read`           | only `read`, `grep`, `find`, `glob`, `web_search`, `todo`; no shell, no edits, so nothing to approve       | research, review, planning, second opinions                                            |
-| `edit` (default) | `--approval-mode write`: file edits run freely; each `bash`/`eval` call waits for your `omp-task approve` | code changes; approve the test command, deny anything else                             |
-| `full`           | `--approval-mode yolo`: everything incl. shell, no approvals                                              | tasks that run many commands themselves; use in a git worktree or a tree you can reset |
+| `--access` | omp flags | Use for |
+| --- | --- | --- |
+| `read` | only `read`, `grep`, `find`, `glob`, `web_search`, `todo`; no shell, no edits, so nothing to approve | research, review, planning, second opinions |
+| `edit` (default) | `--approval-mode write`: file edits run freely; each `bash`/`eval` call waits for your `omp-task approve` | code changes; approve the test command, deny anything else |
+| `full` | `--approval-mode yolo`: everything incl. shell, no approvals | tasks that run many commands themselves; use in a git worktree or a tree you can reset |
 
 In `edit` mode an approval request pauses the worker and `omp-task wait` wakes you
 (`WAKE: <id> approval`), unless an approval rule decides it. Unanswered approvals are denied
@@ -48,7 +48,7 @@ does not restrict it.
 the command text (`bun test*`, `git diff*`), or a whole tool when written `tool:<name>`. Deny
 wins. A command line joined with `&&`, `||`, `;` or `|` is approved only when every command in
 it matches an allow rule (`mkdir -p src/x && cp a src/x/` with rules for both), so `bun test*`
-cannot approve `bun test; rm -rf ~` or `bun test | sh`; a deny rule matching any command denies
+cannot approve `bun test; <another command>` or `bun test | sh`; a deny rule matching any command denies
 the line. A command-pattern rule never approves `&`, substitutions (`$(`, backticks) or
 redirects other than `2>/dev/null`, `>/dev/null`, `&>/dev/null` and `2>&1`.
 

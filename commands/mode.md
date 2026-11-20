@@ -9,7 +9,7 @@ Run `omp-task mode $ARGUMENTS` and report its first line in one sentence.
 - `subagent` (the default): Claude waits on each job through the plugin's `omp:job` agent,
   started in the background. Each job gets a row in the agent panel of Claude Code and Orca, with
   its state, model, time, cost and what it waits on; a cheap model (haiku) relays the job's
-  wake-ups, about $0.001 each.
+  wake-ups, about USD 0.001 each.
 - `bash`: Claude waits with a background `omp-task wait` Bash command, as before 1.6. No agent
   rows, no haiku cost.
 

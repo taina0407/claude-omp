@@ -6,3 +6,6 @@ node_modules/
 dist/
 *.tsbuildinfo
 .omp-spike/
+
+# SkillEvaluator output (never commit)
+skills/*/evals/results/
