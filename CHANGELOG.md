@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.6.3 (2026-11-21)
+
+- **The delegate skill loads and answers more reliably.** Measured with NVIDIA SkillEvaluator's
+  live A/B runs (Claude Code, 14 cases x 5 attempts, with and without the skill): 99% of
+  attempts pass with the skill, 21% without. The fixes it led to:
+  - The description starts with "Use when" and names second opinions, cross-model review, the
+    `smol`/`slow`/`tiny` roles, "always delegate" and plan-only requests; `when_to_use` adds
+    Vietnamese triggers ("delegate cho omp", "giao cho omp smol", ...).
+  - Claude passes the model or role the user names verbatim instead of swapping in one it thinks
+    is equivalent.
+  - On an out-of-scope approval it denies, steers if needed, and never runs the denied command
+    itself.
+  - `omp-task review --base <branch> -m <role> --detach` is spelled out (`--base` finds the
+    merge-base itself).
+  - A Troubleshooting table, including how to restart the daemon (`omp-task daemon stop`; the next
+    command starts it again).
+- **Fix:** `$0.001` in the skill and `/omp:mode` became "<first argument>.001", because Claude
+  Code reads `$0` as an argument; it now says USD 0.001.
+- `skills/delegate/evals/` holds the 14 eval cases, and a new `skill-checks` workflow runs
+  SkillEvaluator's keyless Tier 1 checks (schema, quality, security scan) on every pull request.
+
 ## 1.6.2 (2026-11-11)
 
 - **Fewer extra wake turns.** Claude sometimes armed the same `omp-task wait` twice in one turn
